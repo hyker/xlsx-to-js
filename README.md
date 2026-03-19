@@ -2,6 +2,8 @@
 
 A TypeScript-based library for parsing Excel (XLSX) with browser support.
 
+[Live demo](https://javier-mora.github.io/xlsx-to-js/)
+
 ## Getting Started
 ### Installation
 
