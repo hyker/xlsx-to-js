@@ -1,6 +1,6 @@
 {
   "name": "xlsx-to-js",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "A TypeScript-based library for parsing Excel (XLSX) with browser support",
   "type": "module",
   "main": "./dist/index.js",
