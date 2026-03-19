@@ -7,3 +7,7 @@
 # Build files
 /dist
 examples/vite/node_modules/
+examples/vite/dist/
+*storybook.log
+debug-storybook.log
+storybook-static

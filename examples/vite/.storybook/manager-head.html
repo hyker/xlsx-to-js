@@ -1,0 +1,10 @@
+<script>
+  (function redirectStaticRootToDocs() {
+    var url = new URL(window.location.href);
+
+    if (!url.searchParams.get("path")) {
+      url.searchParams.set("path", "/docs/xlsxparser--overview");
+      window.location.replace(url.toString());
+    }
+  })();
+</script>

@@ -95,6 +95,28 @@ Notes:
 - **Node.js:** intended for browser use. In Node you must polyfill `DOMParser` (e.g., jsdom) to use XML parsing and HTML rendering.
 - **Module Format:** published as ESM; works with bundlers like Vite/Webpack/Rollup.
 
+## Storybook
+
+This repository includes a Storybook playground for browser usage examples.
+
+Run it locally:
+
+```bash
+npm install
+npm run build
+npm --prefix examples/vite install
+npm --prefix examples/vite run storybook
+```
+
+Build it for static hosting:
+
+```bash
+npm run build
+npm --prefix examples/vite run build-storybook
+```
+
+The GitHub Actions workflow in `.github/workflows/storybook-pages.yml` publishes the generated Storybook to GitHub Pages on pushes to `main` or `master`.
+
 
 ## References
 - ISO/IEC 29500:2012 "Office Open XML File Formats — Fundamentals And Markup Language Reference"

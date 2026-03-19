@@ -1,0 +1,100 @@
+import { Canvas, Meta, Source, Controls } from '@storybook/addon-docs/blocks';
+import * as XlsxParserStories from './XlsxParser.stories';
+
+<Meta of={XlsxParserStories} name="Overview" />
+
+# XlsxParser
+
+Browser-first workbook parsing and HTML rendering for `.xlsx` files.
+
+## Table of contents
+
+- [Overview](#overview)
+- [Live examples](#live-examples)
+- [Component API](#component-api)
+- [Implementation](#implementation)
+
+---
+
+## Overview
+
+`XlsxParser` reads workbook bytes from an `ArrayBuffer` and returns a parsed workbook model that can be rendered as Excel-like HTML.
+
+Use it when you need to:
+
+- inspect workbook content in the browser
+- render one sheet at a time for tabbed interfaces
+- render the entire workbook as a single HTML document
+- experiment with parser options such as `styles`, `drawings`, and `skipHiddenRows`
+
+The examples below use the real package build generated from this repository and an embedded sample workbook that also works when the docs are published to GitHub Pages.
+
+## Live examples
+
+### Single-sheet rendering
+
+Use `toHTMLSheet()` when the UI needs tabs, lazy rendering, or focused sheet inspection.
+
+<Canvas of={XlsxParserStories.InteractiveSheetView} sourceState="hidden" />
+
+### Full workbook HTML
+
+Use `toHTML()` when you want one continuous HTML output containing every sheet in the workbook.
+
+<Canvas of={XlsxParserStories.FullWorkbookHtml} sourceState="hidden" />
+
+## Component API
+
+<Controls of={XlsxParserStories.InteractiveSheetView} />
+
+## Implementation
+
+### Parse a workbook
+
+<Source
+  language="ts"
+  dark
+  code={`import { XlsxParser } from "xlsx-to-js";
+
+const parser = new XlsxParser();
+const workbook = await parser.readFile(fileArrayBuffer, {
+  dense: true,
+  styles: true,
+  drawings: true,
+  skipHiddenRows: true,
+});`}
+/>
+
+### Render a single sheet
+
+<Source
+  language="ts"
+  dark
+  code={`const parser = new XlsxParser();
+const workbook = await parser.readFile(fileArrayBuffer, {
+  dense: true,
+  styles: true,
+  drawings: true,
+  skipHiddenRows: true,
+});
+
+const html = parser.toHTMLSheet(workbook, 0);
+document.getElementById("sheet-view")!.innerHTML = html;`}
+/>
+
+### Render the full workbook
+
+<Source
+  language="ts"
+  dark
+  code={`const parser = new XlsxParser();
+const workbook = await parser.readFile(fileArrayBuffer, {
+  dense: true,
+  styles: true,
+  drawings: true,
+  skipHiddenRows: true,
+});
+
+const html = parser.toHTML(workbook);
+document.getElementById("workbook-root")!.innerHTML = html;`}
+/>

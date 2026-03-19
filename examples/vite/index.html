@@ -3,60 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>XLSX to HTML Demo</title>
-  <style>
-    .container { margin-top: 20px; }
-    /* Parent wrapper sets explicit height (see inline style below) */
-    #viewer {
-      width: 100%;
-      height: 100%;
-      background: white;
-      border: 1px solid #e1e4e8;
-      display: flex;
-      flex-direction: column;
-    }
-    #sheetView {
-      overflow: auto;
-      max-width: 90vw;
-      /* Take up remaining height, capped by parent height */
-      flex: 1 1 auto;
-      max-height: 100%;
-    }
-    .tabs {
-      display: flex;
-      gap: 4px;
-      padding: 8px;
-      border-top: 1px solid #e1e4e8;
-      background: #f6f8fa;
-      position: sticky;
-      bottom: 0;
-    }
-    .tab {
-      padding: 6px 10px;
-      border: 1px solid #c9d1d9;
-      border-radius: 6px;
-      background: #fff;
-      cursor: pointer;
-      font-family: Arial, sans-serif;
-      font-size: 12px;
-      user-select: none;
-    }
-    .tab.active { background: #e7f5ff; border-color: #4ea1ff; }
-    /* Selection styles */
-    .xl td.sel { outline: 2px solid #4ea1ff; outline-offset: -2px; background-color: rgba(78,161,255,0.12); }
-    .xl th.sel-h { background: #dbeeff; }
-  </style>
+  <title>XlsxParser Demo</title>
 </head>
 <body>
-  <h1>Upload XLSX file</h1>
-  <input type="file" id="xlsxInput" title="file" accept=".xlsx" />
-  <div style="width: 1000px; height: 500px;">
-    <div id="viewer" class="container">
-      <div id="sheetView"></div>
-      <div id="tabs" class="tabs"></div>
-    </div>
-  </div>
-  
+  <div id="app"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
