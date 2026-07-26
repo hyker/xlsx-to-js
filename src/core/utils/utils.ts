@@ -121,7 +121,7 @@ export function getSheetDimension(sheetData: Element): string {
   if (cellElements.length === 0) return "";
 
   let minRow = Number.MAX_VALUE, maxRow = Number.MIN_VALUE;
-  let minCol = "Z", maxCol = "A";
+  let minCol = Number.MAX_VALUE, maxCol = Number.MIN_VALUE;
 
   const parseCellReference = (ref: string): { col: string, row: number } => {
     const match = ref.match(/^([A-Z]+)(\d+)$/);
@@ -134,16 +134,27 @@ export function getSheetDimension(sheetData: Element): string {
     const cellRef = cell.getAttribute("r");
     if (cellRef) {
       const { col, row } = parseCellReference(cellRef);
+      const colIndex = getColumnIndex(col);
 
       minRow = Math.min(minRow, row);
       maxRow = Math.max(maxRow, row);
 
-      if (col < minCol) minCol = col;
-      if (col > maxCol) maxCol = col;
+      minCol = Math.min(minCol, colIndex);
+      maxCol = Math.max(maxCol, colIndex);
     }
   });
 
-  return `${minCol}${minRow}:${maxCol}${maxRow}`;
+  const columnName = (index: number): string => {
+    let name = '';
+    while (index > 0) {
+      const remainder = (index - 1) % 26;
+      name = String.fromCharCode(65 + remainder) + name;
+      index = Math.floor((index - 1) / 26);
+    }
+    return name;
+  };
+
+  return `${columnName(minCol)}${minRow}:${columnName(maxCol)}${maxRow}`;
 }
 
 export function excelSerialToJSDate(serial: number): Date {

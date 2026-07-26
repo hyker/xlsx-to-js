@@ -1,6 +1,6 @@
 {
   "name": "xlsx-to-js",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "A TypeScript-based library for parsing Excel (XLSX) with browser support",
   "type": "module",
   "main": "./dist/index.js",
@@ -18,7 +18,7 @@
   "scripts": {
     "build": "tsup",
     "dev:demo": "npm --prefix examples/vite run dev",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
@@ -32,6 +32,7 @@
   ],
   "author": "Javier Mora",
   "license": "MIT",
+  "funding": "https://github.com/sponsors/javier-mora",
   "bugs": {
     "url": "https://github.com/javier-mora/xlsx-to-js/issues"
   },

@@ -592,9 +592,9 @@ export class XlsxParser {
         const files: string[] = [];
         result.forEach((p) => files.push(p));
         const sheetFiles = files.filter(x => x.includes('xl/worksheets/sheet'));
-        const drawingFiles = files.filter(x => x.includes('xl/drawings/drawing'));
-        const drawingRelFiles = files.filter(x => x.includes('xl/drawings/_rels/drawing'));
-        const mediaFiles = files.filter(x => x.includes('xl/media/'));
+        const drawingFiles = options.drawings ? files.filter(x => x.includes('xl/drawings/drawing')) : [];
+        const drawingRelFiles = options.drawings ? files.filter(x => x.includes('xl/drawings/_rels/drawing')) : [];
+        const mediaFiles = options.drawings ? files.filter(x => x.includes('xl/media/')) : [];
         
         let sharedStrings: string[] = [];
         let themes: Theme[] = [];
@@ -664,7 +664,7 @@ export class XlsxParser {
 
             if (xml) {
                 const nDrawing = parseDrawingXml(xml, rel ?? '', media, themes);
-                drawings.push({ src: `drawing${i+1}.xml`, drawings: nDrawing});
+                drawings.push({ src: relName, drawings: nDrawing});
             }
         }
 
@@ -683,6 +683,12 @@ export class XlsxParser {
                 workbook.workSheets[i].data = nSheet.data;
                 workbook.workSheets[i].mergeCells = nSheet.mergeCells;
                 workbook.workSheets[i].drawings = nSheet.drawings;
+                workbook.workSheets[i].defaultColWidth = nSheet.defaultColWidth;
+                workbook.workSheets[i].baseColWidth = nSheet.baseColWidth;
+                workbook.workSheets[i].defaultRowHeight = nSheet.defaultRowHeight;
+                workbook.workSheets[i].zeroHeight = nSheet.zeroHeight;
+                workbook.workSheets[i].defaultFontName = nSheet.defaultFontName;
+                workbook.workSheets[i].defaultFontSize = nSheet.defaultFontSize;
             }
         }
         

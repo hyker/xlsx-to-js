@@ -5,10 +5,12 @@ export const parseSharedStringsXml = (str: string): string[] => {
     const strings: string[] = [];
     const xmlDoc = new DOMParser().parseFromString(str, 'text/xml');
     const sstElement = getElementByName(xmlDoc, 'sst');
-    const tArray = getElementsByName(sstElement, 't');
+    const stringItems = getElementsByName(sstElement, 'si');
 
-    tArray.forEach(x => {
-        strings.push(x.textContent ?? '');
+    stringItems.forEach(item => {
+        // A shared string can contain several rich-text runs. Each <si> is one
+        // indexed value; flattening every <t> shifts all subsequent indexes.
+        strings.push(getElementsByName(item, 't').map(text => text.textContent ?? '').join(''));
     });
 
     return strings;
