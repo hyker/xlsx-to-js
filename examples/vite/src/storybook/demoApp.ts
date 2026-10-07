@@ -69,6 +69,7 @@ export function createXlsxDemo(args: StoryArgs): XlsxDemoElement {
   const workerParser = new XlsxWorkerParser(() => new Worker(new URL('./parserWorker.ts', import.meta.url), { type: 'module' }));
   let loadGeneration = 0;
   let currentLoad: AbortController | undefined;
+  let currentExport: AbortController | undefined;
   let rowPage = 0, columnPage = 0;
   let currentPage: XlsxSheetPage | undefined;
   let disposed = false;
@@ -88,7 +89,7 @@ export function createXlsxDemo(args: StoryArgs): XlsxDemoElement {
               </a>
             </div>
             <input class="sb-demo__input" data-action="upload" type="file" accept=".xlsx" />
-            <button class="sb-demo__button" type="button" data-action="cancel" disabled>Cancel loading</button>
+            <button class="sb-demo__button" type="button" data-action="cancel" disabled>Cancel processing</button>
             <p class="sb-demo__small">Up to 10 MiB and 250,000 sheet positions across the workbook. Additional limits apply to XML, images, and merged cells.</p>
             <p class="sb-demo__small">Preview uses saved formula results. Some number formats, drawings, and Excel layout features have limited support.</p>
           </section>
@@ -219,7 +220,7 @@ export function createXlsxDemo(args: StoryArgs): XlsxDemoElement {
         : 'No visible cells';
       for (const [action, enabled] of Object.entries({
         'row-prev': p.rowPage > 0, 'row-next': p.rowPage + 1 < p.totalRowPages,
-        'col-prev': p.columnPage > 0, 'col-next': p.columnPage + 1 < p.totalColumnPages, export: true,
+        'col-prev': p.columnPage > 0, 'col-next': p.columnPage + 1 < p.totalColumnPages, export: !currentExport && !currentLoad,
       })) {
         const button = root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);
         if (button) button.disabled = !enabled;
@@ -238,9 +239,13 @@ export function createXlsxDemo(args: StoryArgs): XlsxDemoElement {
   function cancelLoad() {
     loadGeneration++;
     currentLoad?.abort();
+    currentExport?.abort();
     currentLoad = undefined;
+    currentExport = undefined;
     cancelButton.disabled = true;
     root.removeAttribute('aria-busy');
+    const exportButton = root.querySelector<HTMLButtonElement>('[data-action="export"]');
+    if (exportButton) exportButton.disabled = !currentWorkbook || !renderedPageAvailable();
   }
 
   async function loadWorkbook(read: () => Promise<ArrayBuffer>, sourceLabel: string) {
@@ -250,6 +255,8 @@ export function createXlsxDemo(args: StoryArgs): XlsxDemoElement {
     const snapshot = { ...options, limits: PREVIEW_LIMITS };
     const start = performance.now();
     cancelButton.disabled = false;
+    const exportButton = root.querySelector<HTMLButtonElement>('[data-action="export"]');
+    if (exportButton) exportButton.disabled = true;
     delete root.dataset.firstDisplayMs;
     root.setAttribute('aria-busy', 'true');
     setStatus(status, 'Processing', `Reading ${sourceLabel}.`);
@@ -300,13 +307,16 @@ export function createXlsxDemo(args: StoryArgs): XlsxDemoElement {
         currentLoad = undefined;
         cancelButton.disabled = true;
         root.removeAttribute('aria-busy');
+        const exportButton = root.querySelector<HTMLButtonElement>('[data-action="export"]');
+        if (exportButton && currentWorkbook && renderedPageAvailable()) exportButton.disabled = false;
       }
     }
   }
 
   cancelButton.addEventListener('click', () => {
+    const exporting = !!currentExport;
     cancelLoad();
-    setStatus(status, 'Loading cancelled', 'You can load another workbook.');
+    setStatus(status, exporting ? 'Export cancelled' : 'Loading cancelled', 'You can load another workbook.');
   });
   sampleButton.addEventListener('click', () => {
     void loadWorkbook(async () => base64ToArrayBuffer(sampleWorkbookBase64), 'the embedded sample workbook');
@@ -329,17 +339,39 @@ export function createXlsxDemo(args: StoryArgs): XlsxDemoElement {
       renderPage();
     });
   }
-  root.querySelector('[data-action="export"]')?.addEventListener('click', () => {
-    if (!currentWorkbook) return;
+  function renderedPageAvailable() {
+    return currentSheetIndex >= 0 && canvas.querySelector('.xl-sheet') !== null;
+  }
+
+  root.querySelector('[data-action="export"]')?.addEventListener('click', async () => {
+    if (!currentWorkbook || currentLoad || currentExport) return;
+    const generation = loadGeneration;
+    const controller = currentExport = new AbortController();
+    const button = root.querySelector<HTMLButtonElement>('[data-action="export"]')!;
+    button.disabled = true;
+    cancelButton.disabled = false;
+    root.setAttribute('aria-busy', 'true');
+    setStatus(status, 'Exporting workbook', 'Preparing full HTML. You can cancel this export.');
     try {
-      const html = parser.toHTML(currentWorkbook, { limits: PREVIEW_LIMITS });
+      const html = await workerParser.toHTML(currentWorkbook, { limits: PREVIEW_LIMITS, signal: controller.signal });
+      if (generation !== loadGeneration || disposed) return;
       const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
       const link = document.createElement('a');
       link.href = url;
       link.download = 'workbook.html';
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (error) { setStatus(status, 'Export unavailable', error instanceof Error ? error.message : String(error)); }
+      setStatus(status, 'Export ready', 'Your full HTML download is ready.');
+    } catch (error) {
+      if (generation === loadGeneration && !disposed) setStatus(status, 'Export unavailable', error instanceof Error ? error.message : String(error));
+    } finally {
+      if (generation === loadGeneration && !disposed) {
+        currentExport = undefined;
+        cancelButton.disabled = true;
+        button.disabled = false;
+        root.removeAttribute('aria-busy');
+      }
+    }
   });
 
   optionsHost.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((input) => {

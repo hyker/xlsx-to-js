@@ -3,6 +3,7 @@ import { WorkSheet } from './worksheet/types';
 import { Drawing } from './drawing/types';
 import { XlsxLimits, XlsxRenderOptions, XlsxPageOptions, XlsxSheetPage } from '../types';
 import { boundedNumber, enumValue, escapeHtml, fontFamily, parseRange, resolveLimits, safeColor } from './security';
+import { chargeImagePixels, inspectBase64Image, ImageInfo } from './image';
 
 const CSS = `<style>
 .xlwb{font-family:Arial,sans-serif;color:#222}.xl-sheet{margin:12px 0}.xl-name{font-weight:600;margin:6px 0}
@@ -19,6 +20,7 @@ class Html {
     private length = 0;
     private styleObjects = new WeakMap<object, string>();
     private rules = new Map<string, string>();
+    private images = new Map<string, ImageInfo>();
     constructor(private max: number) {}
     add(value: string): void {
         if ((this.length += value.length) > this.max) throw new Error('HTML exceeds output budget');
@@ -46,6 +48,11 @@ class Html {
     finish(): string {
         if (this.rules.size) this.add(`<style>${Array.from(this.rules, ([name, css]) => `.xl .${name}{${css}}`).join('')}</style>`);
         return this.chunks.join('');
+    }
+    image(base64: string, limits: XlsxLimits): ImageInfo {
+        let info = this.images.get(base64);
+        if (!info) { info = inspectBase64Image(base64, limits); this.images.set(base64, info); }
+        return info;
     }
 }
 
@@ -89,17 +96,6 @@ function lowerBound(values: number[], target: number): number {
     return lo;
 }
 
-function imageMime(base64: string, limits: XlsxLimits): string {
-    if (base64.length > Math.ceil(limits.maxEntryBytes / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64)) {
-        throw new Error('Invalid image data');
-    }
-    const head = atob(base64.slice(0, 16));
-    if (head.startsWith('\x89PNG\r\n\x1a\n')) return 'image/png';
-    if (head.startsWith('\xff\xd8\xff')) return 'image/jpeg';
-    if (head.startsWith('GIF87a') || head.startsWith('GIF89a')) return 'image/gif';
-    throw new Error('Unsupported image format');
-}
-
 function validateDrawing(drawing: Drawing, limits: XlsxLimits): void {
     for (const position of [drawing.position?.from, drawing.position?.to]) {
         if (!position) throw new Error('Invalid drawing position');
@@ -114,7 +110,7 @@ function validateDrawing(drawing: Drawing, limits: XlsxLimits): void {
     }
 }
 
-interface Budget { cells: number; merges: number; drawings: number }
+interface Budget { cells: number; merges: number; drawings: number; imagePixels: number }
 
 export function renderSheetPage(workbook: Workbook, index: number, options: XlsxPageOptions = {}): XlsxSheetPage {
     const limits = resolveLimits(options.limits);
@@ -126,7 +122,7 @@ export function renderSheetPage(workbook: Workbook, index: number, options: Xlsx
     const page = validatePage(options, limits);
     const empty = { rowPage: 0, columnPage: 0, totalRowPages: 0, totalColumnPages: 0, totalRows: 0, totalColumns: 0, rowStart: 0, rowEnd: 0, columnStart: 0, columnEnd: 0 };
     const result = !options.includeHiddenSheets && sheet.state && sheet.state !== 'visible'
-        ? empty : renderSheet(sheet, html, limits, { cells: 0, merges: 0, drawings: 0 }, page) ?? empty;
+        ? empty : renderSheet(sheet, html, limits, { cells: 0, merges: 0, drawings: 0, imagePixels: 0 }, page) ?? empty;
     html.add('</div>');
     return { ...result, html: html.finish() };
 }
@@ -146,7 +142,7 @@ export function renderWorkbook(workbook: Workbook, index: number | undefined, op
     const limits = resolveLimits(options.limits);
     if (workbook.workSheets.length > limits.maxSheets) throw new Error('Sheet count exceeds resource limits');
     const html = new Html(limits.maxHtmlLength);
-    const budget: Budget = { cells: 0, merges: 0, drawings: 0 };
+    const budget: Budget = { cells: 0, merges: 0, drawings: 0, imagePixels: 0 };
     html.add(`<div class="xlwb">${CSS}`);
     const sheets = index === undefined ? workbook.workSheets : [workbook.workSheets[index]];
     for (const sheet of sheets) {
@@ -164,6 +160,7 @@ function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: B
     if ((budget.drawings += sheet.drawings.length) > limits.maxDrawings) throw new Error('Drawing count exceeds resource limits');
     for (const drawing of drawings) {
         validateDrawing(drawing, limits);
+        if (drawing.type === 'image') budget.imagePixels = chargeImagePixels(html.image(drawing.base64, limits).pixels, budget.imagePixels, limits);
         rows = Math.max(rows, drawing.position.from.row + 1, drawing.position.to.row + 1);
         cols = Math.max(cols, drawing.position.from.col + 1, drawing.position.to.col + 1);
     }
@@ -302,7 +299,7 @@ function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: B
         const left = box.left - originX, top = box.top - originY;
         const position = `position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;`;
         if (drawing.type === 'image') {
-            const mime = imageMime(drawing.base64, limits);
+            const mime = html.image(drawing.base64, limits).mime;
             html.add(`<img alt="${html.text(drawing.description ?? '')}" src="data:${mime};base64,${drawing.base64}" style="${position}">`);
         } else {
             const p = drawing.properties ?? {};

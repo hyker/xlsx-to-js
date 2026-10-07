@@ -106,7 +106,7 @@ Invalid page indexes throw. An empty or excluded hidden sheet returns zero count
 
 `PREVIEW_LIMITS` keeps the default 10 MiB upload, 250,000 workbook positions, and other grid/drawing budgets. It allows 16 MiB per archive entry, 64 MiB total expanded archive data, 1,000,000 XML nodes per part, and 2 Mi characters per rendered page. These independent limits can reject a file below the upload or grid cap. Pass the same chosen budgets to parsing and rendering; raising them needs application-specific performance testing.
 
-The demo checks file size before `File.arrayBuffer()`, parses in a worker with a 30-second timeout, displays progress, supports cancellation, and prevents older loads from overwriting newer results. It always previews one sheet and one page at a time. Its full HTML download is an explicit, budget-limited export action.
+The demo checks file size before `File.arrayBuffer()`, parses in a worker with a 30-second timeout, displays progress, supports cancellation, and prevents older loads from overwriting newer results. It always previews one sheet and one page at a time. Its full HTML download runs in a cancellable worker with a timeout and output budget. Loading another file or disposing the demo cancels an outstanding export.
 
 ### Cancellable worker parsing
 
@@ -141,6 +141,20 @@ const workbook = await parser.readFile(await file.arrayBuffer(), {
 
 Each call owns a worker that is terminated on success, error, timeout, or cancellation. Input bytes are cloned and remain available to the caller. The returned workbook is structured-cloned once to the caller. A worker protects responsiveness and enables interruption; it does not impose a browser memory ceiling. Use a request generation token to ignore obsolete file reads as well as obsolete parser results. Catch `AbortError` separately when cancellation is a normal user action.
 
+Reuse one worker client to bound simultaneous jobs. By default, `XlsxWorkerParser` permits one active parse or export; additional calls reject before creating a worker or cloning their input. Abort an obsolete job before starting its replacement. Applications with tested capacity can pass `{ maxConcurrentJobs: 2 }` as the constructor's second argument. Independent clients have independent concurrency limits.
+
+For a full export without running HTML generation on the UI thread:
+
+```ts
+const html = await parser.toHTML(workbook, {
+  limits: PREVIEW_LIMITS,
+  signal: controller.signal,
+  timeoutMs: 30_000,
+});
+```
+
+Here `parser` is the `XlsxWorkerParser` created above. The workbook is cloned into the export worker after its text budget is checked. Worker exports use the deterministic font-width fallback because browser canvas font metrics are unavailable there; column widths may differ slightly from a main-thread export. The synchronous `XlsxParser.toHTML` APIs remain available for callers that manage their own execution context.
+
 Direct `XlsxParser.readFile` also accepts `signal` and `onProgress`, but cancellation is cooperative at parsing boundaries and cannot interrupt a running synchronous XML parse. For expensive inputs, use the worker client.
 
 Parsed cells with the same resolved style share a style object. Before customizing one cell, replace its style with a copy (and clone its border when changing borders) rather than mutating a shared object.
@@ -153,7 +167,11 @@ See the limitations below for drawing, theme, font, and layout differences. Vali
 
 ### Untrusted workbooks and resource limits
 
-The parser rejects malformed XML, DTD/entity declarations, invalid coordinates and indexes, duplicate cells, overlapping merges, invalid required relationships, archive traversal, duplicate archive paths, and ZIP checksum mismatches. Fonts are serialized as quoted CSS strings; alignment and colors are restricted to supported values. Neither formulas nor external relationships are executed or fetched. Embedded images are restricted to PNG, JPEG, and GIF when rendered.
+The parser rejects malformed XML, DTD/entity declarations, invalid coordinates and indexes, duplicate cells, overlapping merges, invalid required relationships, archive traversal, duplicate archive paths, and ZIP checksum mismatches. Fonts are serialized as quoted CSS strings; alignment and colors are restricted to supported values. Neither formulas nor external relationships are executed or fetched. Embedded images are restricted to static PNG, JPEG, and GIF when drawings are enabled. APNG, multi-frame GIF, and unsupported JPEG modes are rejected.
+
+A constant-memory lexical pass checks XML node, depth, and attribute budgets before invoking `DOMParser`. Comments, CDATA, processing instructions, and quoted attribute values are handled as separate regions. DOM parsing still validates XML well-formedness and namespaces, and the resulting tree is checked again. The pass counts document-level markup and text conservatively, so a part at its exact node limit can be rejected slightly earlier than a DOM-only count.
+
+Image headers are inspected before media is returned and again before HTML rendering, including mutable workbook input. Intrinsic dimensions are independent of the drawing's displayed size. Each image is limited to 8,192 pixels per axis and 4,194,304 pixels total; all image drawings together are limited to 16,777,216 pixels. Repeated media counts for every drawing occurrence. A paginated render checks all image drawings in the selected sheet, including images outside the page; full exports aggregate across all included sheets. These caps bound raster size, not all codec or browser memory overhead.
 
 Budgets apply before grid allocation and during streamed decompression, including when ZIP size metadata is forged. Archive entry and declared expansion limits include unused parts. Grid, merge, and drawing budgets cover the whole workbook; render budgets also cover expansion caused by drawings. `dense: false` avoids allocating empty cell objects but does not bypass grid budgets. Empty row arrays preserve workbook coordinates.
 
@@ -175,6 +193,8 @@ const html = new XlsxParser().toHTML(workbook, { limits });
 
 Parsing and rendering accept independent `limits` overrides. Pass your chosen budgets to both. Overrides must be positive safe integers; row and column limits cannot exceed Excel's coordinate limits. Raising budgets increases CPU and memory exposure.
 
+Before parsing reports completion or a worker posts its result, `maxWorkbookTextLength` bounds the total string content of the returned workbook. Repeated shared-string values count once per cell; formulas, metadata, style strings, and base64 image data count too. Shared objects are counted once, matching worker cloning. This budget defaults to 16,777,216 UTF-16 code units in both limit presets and can reject a small archive that expands into excessive workbook text. It bounds string content rather than total browser memory; object overhead, XML construction, and image decoding still need application-level controls. Rendering uses its independent HTML output budget.
+
 | Limit | Default |
 |---|---:|
 | `maxFileBytes` | 10 MiB |
@@ -188,8 +208,14 @@ Parsing and rendering accept independent `limits` overrides. Pass your chosen bu
 | `maxMergedCells` | 250,000 positions |
 | `maxDrawings` | 1,000 |
 | `maxDrawingPixels` | 100,000 per coordinate, offset, extent, or rectangle bound |
+| `maxImageDimension` | 8,192 pixels per intrinsic image axis |
+| `maxImagePixels` | 4,194,304 pixels per static image |
+| `maxTotalImagePixels` | 16,777,216 pixels across image drawing occurrences |
 | `maxXmlNodes` | 100,000 per XML part, including text nodes |
 | `maxXmlDepth` | 64 |
+| `maxXmlAttributes` | 100,000 per XML part; 1,000,000 with `PREVIEW_LIMITS` |
+| `maxXmlAttributesPerElement` | 256 |
+| `maxWorkbookTextLength` | 16,777,216 UTF-16 code units in the parsed workbook |
 | `maxHtmlLength` | 16,777,216 UTF-16 code units |
 
 This strict reader supports classic, single-volume, unencrypted ZIP archives with UTF-8/ASCII paths. ZIP64 and Unicode path-override extra fields are rejected. Unsupported required sheet types (such as chart sheets), missing worksheet relationships, and inconsistent dimensions fail explicitly rather than returning partial data.
@@ -199,6 +225,8 @@ For a security-critical application, also isolate parsing in a terminable proces
 ### Development and regression tests
 
 Run `npm ci` and `npm test`. The test command type-checks, builds, and runs adversarial ZIP/XML/HTML tests using Node's test runner and jsdom. Test dependencies require Node 22.22.2+, Node 24.15.0+, or Node 26+ (as supported by jsdom); these are development requirements, not browser runtime requirements.
+
+Resource regressions also run the worker XML implementation in killable subprocesses: XML node/attribute floods must reject within a 128 MiB V8 heap and five seconds. A separate 100,000-cell styled-date parse, result-clone, and preview check runs with a 384 MiB V8 heap and a 768 MiB peak RSS smoke ceiling, reporting its timings and peak process memory. RSS includes fixture generation and is not an estimate of browser worker memory. In one development run this check peaked near 503 MiB RSS; large previews still require testing on the intended devices and application memory limits on servers.
 
 For the demo, run `npm ci --prefix examples/vite`, `npx tsc --noEmit -p examples/vite/tsconfig.json`, and `npm --prefix examples/vite run build-storybook`.
 

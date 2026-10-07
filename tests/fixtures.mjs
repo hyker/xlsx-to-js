@@ -1,4 +1,21 @@
 import JSZip from 'jszip';
+import { deflateSync } from 'node:zlib';
+
+export function pngImage(width = 1, height = 1) {
+    const table = Uint32Array.from({ length: 256 }, (_, i) => {
+        let c = i; for (let j = 0; j < 8; j++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0;
+    });
+    const chunk = (type, data) => {
+        const name = Buffer.from(type), size = Buffer.alloc(4), crc = Buffer.alloc(4);
+        let c = 0xffffffff;
+        for (const b of Buffer.concat([name, data])) c = table[(c ^ b) & 255] ^ (c >>> 8);
+        size.writeUInt32BE(data.length); crc.writeUInt32BE((c ^ 0xffffffff) >>> 0);
+        return Buffer.concat([size, name, data, crc]);
+    };
+    const header = Buffer.alloc(13); header.writeUInt32BE(width); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 6;
+    return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk('IHDR', header),
+        chunk('IDAT', deflateSync(Buffer.alloc((width * 4 + 1) * height))), chunk('IEND', Buffer.alloc(0))]);
+}
 
 export const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 export const REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/';
@@ -13,6 +30,19 @@ export const themeXml = `<a:theme xmlns:a="${DRAW}main"><a:themeElements><a:clrS
 export function drawingXml({color='336699', extent='95250', row='0', col='0', offset='0', image=false, text='', absolute=false}={}) {
     const object = image ? '<xdr:pic><xdr:blipFill><a:blip r:embed="imageRel"/></xdr:blipFill></xdr:pic>' : `<xdr:sp><xdr:spPr><a:solidFill><a:srgbClr val="${esc(color)}"/></a:solidFill></xdr:spPr>${text ? `<xdr:txBody><a:p><a:r><a:t>${esc(text)}</a:t></a:r></a:p></xdr:txBody>` : ''}</xdr:sp>`;
     return `<xdr:wsDr xmlns:xdr="${DRAW}spreadsheetDrawing" xmlns:a="${DRAW}main" xmlns:r="${REL.slice(0,-1)}"><xdr:${absolute ? 'absoluteAnchor' : 'oneCellAnchor'}>${absolute ? `<xdr:pos x="${offset}" y="${offset}"/>` : `<xdr:from><xdr:col>${col}</xdr:col><xdr:row>${row}</xdr:row><xdr:colOff>${offset}</xdr:colOff><xdr:rowOff>0</xdr:rowOff></xdr:from>`}<xdr:ext cx="${extent}" cy="95250"/>${object}</xdr:${absolute ? 'absoluteAnchor' : 'oneCellAnchor'}></xdr:wsDr>`;
+}
+
+// A decodable 1x1 GIF with a large legal comment extension, below the image budget.
+export function gifWithComment(commentBytes = 4 * 1024 * 1024) {
+    const gif = Buffer.from('R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==', 'base64');
+    const chunks = [gif.subarray(0, -1), Buffer.from([0x21, 0xfe])];
+    for (let remaining = commentBytes; remaining > 0;) {
+        const size = Math.min(255, remaining);
+        chunks.push(Buffer.from([size]), Buffer.alloc(size, 65));
+        remaining -= size;
+    }
+    chunks.push(Buffer.from([0, 0x3b]));
+    return Buffer.concat(chunks);
 }
 export async function zip(parts) {
     const z = new JSZip();

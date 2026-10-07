@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { fixture, worksheetXml, stylesXml, drawingXml, relationships } from '../fixtures.mjs';
+import { NS, fixture, worksheetXml, stylesXml, drawingXml, gifWithComment, relationships } from '../fixtures.mjs';
 
 let large;
 const letters = n => { let result = ''; for (; n; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result; };
@@ -114,6 +114,53 @@ test('worker rejects malformed XML and the UI recovers', async ({ page }) => {
     await loaded(page);
 });
 
+test('worker rejects amplified workbook text before returning a result and the UI recovers', async ({ page }) => {
+    const data = Array.from({ length: 1000 }, (_, i) => `<row r="${i + 1}"><c r="A${i + 1}" t="s"><v>0</v></c></row>`).join('');
+    const bytes = Buffer.from(await fixture({
+        sheet: worksheetXml(data, 'A1:A1000'),
+        shared: `<sst xmlns="${NS}"><si><t>${'x'.repeat(32767)}</t></si></sst>`,
+    }));
+    expect(bytes.length).toBeLessThan(10000);
+    await upload(page, 'amplified.xlsx', bytes);
+    await expect(page.locator('[data-role="status"] strong')).toHaveText('Loading failed');
+    await expect(page.locator('[data-role="status"] span')).toContainText('Workbook text');
+    await expect(page.locator('.xl-cell')).toHaveCount(0);
+    await page.locator('[data-action="sample"]').click();
+    await loaded(page);
+});
+
+test('large embedded GIF validates, renders and decodes within explicit output budgets', async ({ page }) => {
+    const bytes = Buffer.from(await fixture({
+        sheet: worksheetXml(undefined, 'A1', '<drawing r:id="drawingRel"/>'),
+        drawing: drawingXml({ image: true }),
+        drawingRelationships: relationships([{ id: 'imageRel', kind: 'image', target: '../media/image.gif' }]),
+        extra: [['xl/media/image.gif', gifWithComment()]],
+    }));
+    const result = await page.evaluate(async ({ encoded, moduleUrl, workerUrl }) => {
+        const { XlsxParser, XlsxWorkerParser } = await import(moduleUrl);
+        const buffer = Uint8Array.from(atob(encoded), c => c.charCodeAt(0)).buffer;
+        const workbook = await new XlsxWorkerParser(() => new Worker(workerUrl, { type: 'module' }))
+            .readFile(buffer, { drawings: true });
+        const parser = new XlsxParser();
+        const preview = parser.toHTMLSheetPage(workbook, 0);
+        const full = parser.toHTML(workbook);
+        document.querySelector('[data-role="canvas"]').innerHTML = preview.html;
+        let budgetError;
+        try { parser.toHTMLSheetPage(workbook, 0, { limits: { maxHtmlLength: 2 * 1024 * 1024 } }); }
+        catch (error) { budgetError = error.message; }
+        return { previewLength: preview.html.length, fullLength: full.length, budgetError };
+    }, {
+        encoded: bytes.toString('base64'),
+        moduleUrl: '/@fs' + process.cwd() + '/dist/index.js',
+        workerUrl: '/@fs' + process.cwd() + '/dist/worker.js',
+    });
+    expect(result.previewLength).toBeGreaterThan(5 * 1024 * 1024);
+    expect(result.fullLength).toBeLessThan(16 * 1024 * 1024);
+    expect(result.budgetError).toContain('HTML exceeds output budget');
+    const image = page.locator('.xl-abs img');
+    await expect.poll(() => image.evaluate(img => img.complete && img.naturalWidth === 1 && img.naturalHeight === 1)).toBe(true);
+});
+
 test('hidden-column merges align visible cells with their column headers', async ({ page }) => {
     const bytes = Buffer.from(await fixture({ sheet: worksheetXml('<row r="1"><c r="A1"><v>42</v></c><c r="C1"><v>9</v></c></row>', 'A1:C1', '<cols><col min="1" max="1" hidden="1"/></cols><mergeCells><mergeCell ref="A1:B1"/></mergeCells>') }));
     await upload(page, 'merged.xlsx', bytes);
@@ -175,4 +222,89 @@ test('full exports keep visible row spans aligned across hidden rows', async ({ 
     const header = await page.locator('[data-col="1"]').boundingBox();
     const last = await page.locator('[data-ref="A4"]').boundingBox();
     expect(Math.abs(header.x - last.x)).toBeLessThan(1);
+});
+
+test('oversized intrinsic image pixels fail before display and the UI recovers', async ({ page }) => {
+    const { pngImage } = await import('../fixtures.mjs');
+    await page.locator('[data-option="drawings"]').check();
+    const bytes = Buffer.from(await fixture({ sheet: worksheetXml(undefined, 'A1', '<drawing r:id="drawingRel"/>'),
+        drawing: drawingXml({ image: true }), drawingRelationships: relationships([{ id: 'imageRel', kind: 'image', target: '../media/image.png' }]),
+        extra: [['xl/media/image.png', pngImage(4096, 4096)]],
+    }));
+    await upload(page, 'pixel-bomb.xlsx', bytes);
+    await expect(page.locator('[data-role="status"] strong')).toHaveText('Loading failed');
+    await expect(page.locator('[data-role="status"] span')).toContainText('Image pixels');
+    await expect(page.locator('.xl-abs img')).toHaveCount(0);
+    await page.locator('[data-action="sample"]').click(); await loaded(page);
+});
+
+test('static PNG and JPEG headers allow images that decode in real browsers', async ({ page }) => {
+    const { pngImage } = await import('../fixtures.mjs');
+    const jpeg = Buffer.from(await page.evaluate(() => {
+        const canvas = document.createElement('canvas'); canvas.width = 32; canvas.height = 16;
+        const context = canvas.getContext('2d'); context.fillStyle = '#336699'; context.fillRect(0, 0, 32, 16);
+        return canvas.toDataURL('image/jpeg').split(',')[1];
+    }), 'base64');
+    await page.locator('[data-option="drawings"]').check();
+    for (const [name, image, dimensions] of [['PNG', pngImage(32, 16), [32, 16]], ['JPEG', jpeg, [32, 16]]]) {
+        const bytes = Buffer.from(await fixture({ sheet: worksheetXml(undefined, 'A1', '<drawing r:id="drawingRel"/>'),
+            drawing: drawingXml({ image: true }), drawingRelationships: relationships([{ id: 'imageRel', kind: 'image', target: '../media/image.bin' }]),
+            extra: [['xl/media/image.bin', image]],
+        }));
+        await upload(page, `${name}.xlsx`, bytes); await loaded(page);
+        const size = await page.locator('.xl-abs img').evaluate(async img => { await img.decode(); return [img.naturalWidth, img.naturalHeight]; });
+        expect(size).toEqual(dimensions);
+    }
+});
+
+test('full exports run in a worker and cancellation leaves preview usable', async ({ page }) => {
+    await page.locator('xlsx-parser-demo').evaluate(element => { element.mode = 'all'; });
+    await page.locator('[data-action="sample"]').click(); await loaded(page);
+    await page.evaluate(() => {
+        window.exportJobs = 0;
+        const Native = window.Worker;
+        window.Worker = class extends Native {
+            postMessage(message) {
+                if (message.type === 'render') window.exportJobs++;
+                setTimeout(() => super.postMessage(message), 300);
+            }
+        };
+    });
+    await page.locator('[data-action="export"]').click();
+    await expect(page.locator('[data-role="status"] strong')).toHaveText('Exporting workbook');
+    await page.locator('[data-action="cancel"]').click();
+    await expect(page.locator('[data-role="status"] strong')).toHaveText('Export cancelled');
+    await expect(page.locator('.xl-cell').first()).toBeVisible();
+    const downloadEvent = page.waitForEvent('download');
+    await page.locator('[data-action="export"]').click();
+    const download = await downloadEvent;
+    expect(download.suggestedFilename()).toBe('workbook.html');
+    const stream = await download.createReadStream(), chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    const html = Buffer.concat(chunks).toString();
+    expect(html).toContain('Overview'); expect(html).toContain('Dataset');
+    await expect(page.locator('[data-role="status"] strong')).toHaveText('Export ready');
+    expect(await page.evaluate(() => window.exportJobs)).toBe(2);
+});
+
+test('a new load cancels an outstanding export without a stale download', async ({ page }) => {
+    await page.locator('xlsx-parser-demo').evaluate(element => { element.mode = 'all'; });
+    await page.locator('[data-action="sample"]').click(); await loaded(page);
+    const downloads = []; page.on('download', download => downloads.push(download));
+    await page.evaluate(() => {
+        const Native = window.Worker;
+        window.Worker = class extends Native {
+            postMessage(message) {
+                if (message.type === 'render') setTimeout(() => super.postMessage(message), 300);
+                else super.postMessage(message);
+            }
+        };
+    });
+    await page.locator('[data-action="export"]').click();
+    await expect(page.locator('[data-role="status"] strong')).toHaveText('Exporting workbook');
+    await page.locator('[data-action="sample"]').click(); await loaded(page);
+    await page.waitForTimeout(400);
+    expect(downloads).toHaveLength(0);
+    await expect(page.locator('[data-action="export"]')).toBeEnabled();
+    await expect(page.locator('[data-role="status"] strong')).toHaveText('Workbook loaded');
 });

@@ -1,4 +1,5 @@
 import { XlsxLimits } from '../types';
+import { Workbook } from './workbook/types';
 
 export const DEFAULT_LIMITS: Readonly<XlsxLimits> = Object.freeze({
     maxFileBytes: 10 * 1024 * 1024,
@@ -12,8 +13,14 @@ export const DEFAULT_LIMITS: Readonly<XlsxLimits> = Object.freeze({
     maxMergedCells: 250000,
     maxDrawings: 1000,
     maxDrawingPixels: 100000,
+    maxImageDimension: 8192,
+    maxImagePixels: 4 * 1024 * 1024,
+    maxTotalImagePixels: 16 * 1024 * 1024,
     maxXmlNodes: 100000,
     maxXmlDepth: 64,
+    maxXmlAttributes: 100000,
+    maxXmlAttributesPerElement: 256,
+    maxWorkbookTextLength: 16 * 1024 * 1024,
     maxHtmlLength: 16 * 1024 * 1024,
 });
 
@@ -23,6 +30,7 @@ export const PREVIEW_LIMITS: Readonly<XlsxLimits> = Object.freeze({
     maxEntryBytes: 16 * 1024 * 1024,
     maxTotalBytes: 64 * 1024 * 1024,
     maxXmlNodes: 1_000_000,
+    maxXmlAttributes: 1_000_000,
     maxHtmlLength: 2 * 1024 * 1024,
 });
 
@@ -36,6 +44,25 @@ export function resolveLimits(overrides: Partial<XlsxLimits> = {}): XlsxLimits {
     }
     if (limits.maxRows > 1048576 || limits.maxColumns > 16384) throw new Error('Limits exceed Excel coordinates');
     return limits;
+}
+
+/** Match structured clone's object sharing, but count strings at every occurrence.
+ * This also covers formulas, style text, metadata and repeated drawing media.
+ */
+export function assertWorkbookTextBudget(workbook: Workbook, limits: XlsxLimits): void {
+    let remaining = limits.maxWorkbookTextLength;
+    const seen = new WeakSet<object>();
+    const pending: unknown[] = [workbook];
+    while (pending.length) {
+        const value = pending.pop();
+        if (typeof value === 'string') {
+            if (value.length > remaining) throw new Error('Workbook text exceeds resource limits');
+            remaining -= value.length;
+        } else if (value !== null && typeof value === 'object' && !seen.has(value)) {
+            seen.add(value);
+            for (const child of Object.values(value)) pending.push(child);
+        }
+    }
 }
 
 export function boundedNumber(value: unknown, label: string, max: number, min = 0, integer = false): number {

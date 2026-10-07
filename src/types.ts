@@ -60,8 +60,17 @@ export interface XlsxLimits {
     maxDrawings: number;
     /** Maximum coordinate, offset or extent in pixels. */
     maxDrawingPixels: number;
+    /** Intrinsic raster dimensions, independent of drawing layout size. */
+    maxImageDimension: number;
+    maxImagePixels: number;
+    /** Sum of raster pixels for every image drawing, including repeated media. */
+    maxTotalImagePixels: number;
     maxXmlNodes: number;
     maxXmlDepth: number;
+    maxXmlAttributes: number;
+    maxXmlAttributesPerElement: number;
+    /** Total UTF-16 code units in parsed workbook strings, counting each cloned occurrence. */
+    maxWorkbookTextLength: number;
     /** Maximum serialized HTML length (UTF-16 code units). */
     maxHtmlLength: number;
 }

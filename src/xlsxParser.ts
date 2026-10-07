@@ -7,8 +7,9 @@ import { parseWorksheetXml } from './core/worksheet';
 import { Drawing, MediaFile } from './core/drawing/types';
 import { parseDrawingXml } from './core/drawing';
 import { Archive, readRelationships, Relationship, relationshipType, toBase64 } from './core/archive';
-import { parseRange, resolveLimits } from './core/security';
+import { assertWorkbookTextBudget, parseRange, resolveLimits } from './core/security';
 import { renderWorkbook, renderSheetPage } from './core/render';
+import { chargeImagePixels, inspectImage } from './core/image';
 
 export class XlsxParser {
     /** Bounded preview with original coordinates and merges clipped to the page. */
@@ -55,9 +56,10 @@ export class XlsxParser {
         const strings = findPart('sharedStrings');
         const sharedStrings = strings ? parseSharedStringsXml(await archive.text(strings.target), limits) : [];
         const mediaCache = new Map<string, MediaFile>();
+        const imagePixels = new Map<string, number>();
         const drawingCache = new Map<string, Drawing[]>();
         const sheetParts = new Set<string>();
-        let cells = 0, merges = 0, drawingCount = 0;
+        let cells = 0, merges = 0, drawingCount = 0, totalImagePixels = 0;
         let completedSheets = 0;
         for (const sheet of workbook.workSheets) {
             checkAbort();
@@ -90,7 +92,10 @@ export class XlsxParser {
                     if (imageRel.external) throw new Error('External drawing images are unsupported');
                     let image = mediaCache.get(imageRel.target);
                     if (!image) {
-                        image = { name: imageRel.target, base64: toBase64(await archive.bytes(imageRel.target)) };
+                        const bytes = await archive.bytes(imageRel.target);
+                        const info = inspectImage(bytes, limits);
+                        image = { name: imageRel.target, base64: toBase64(bytes) };
+                        imagePixels.set(image.base64, info.pixels);
                         mediaCache.set(imageRel.target, image);
                     }
                     media.push(image);
@@ -100,9 +105,13 @@ export class XlsxParser {
             }
             drawingCount += drawings.length;
             if (drawingCount > limits.maxDrawings) throw new Error('Workbook drawings exceed resource limits');
+            for (const drawing of drawings) if (drawing.type === 'image') {
+                totalImagePixels = chargeImagePixels(imagePixels.get(drawing.base64)!, totalImagePixels, limits);
+            }
             sheet.drawings = drawings;
         }
         checkAbort();
+        assertWorkbookTextBudget(workbook, limits);
         options.onProgress?.({ phase: 'complete', completedSheets, totalSheets: workbook.workSheets.length });
         return workbook;
     }

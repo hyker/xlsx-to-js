@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { XlsxParser, XlsxWorkerParser, PREVIEW_LIMITS } from '../dist/index.js';
 import { fixture, worksheetXml, stylesXml, drawingXml } from './fixtures.mjs';
 const dom = new JSDOM('<main></main>');
@@ -134,4 +136,72 @@ test('worker preflight rejects oversized bytes before creating a worker', async 
     await assert.rejects(client.readFile(new ArrayBuffer(2), { limits: { maxFileBytes: 1 } }), /file budget/);
     assert.equal(created, false);
     assert.ok(Object.isFrozen(PREVIEW_LIMITS));
+});
+
+test('worker client caps concurrent parse and export jobs and releases slots after cancellation', async () => {
+    const workers = [];
+    const client = new XlsxWorkerParser(() => {
+        const worker = { terminated: false, postMessage(message) { this.message = message; }, terminate() { this.terminated = true; } };
+        workers.push(worker); return worker;
+    });
+    const controller = new AbortController();
+    const parsing = client.readFile(new ArrayBuffer(1), { signal: controller.signal });
+    await assert.rejects(client.readFile(new ArrayBuffer(1)), /concurrency/);
+    await assert.rejects(client.toHTML({ workSheets: [] }), /concurrency/);
+    assert.equal(workers.length, 1);
+    controller.abort(); await assert.rejects(parsing, { name: 'AbortError' });
+    const exporting = client.toHTML({ workSheets: [] });
+    assert.equal(workers[1].message.type, 'render');
+    workers[1].onmessage({ data: { type: 'result', html: '<div>exported</div>' } });
+    assert.equal(await exporting, '<div>exported</div>');
+    assert.ok(workers.every(w => w.terminated));
+    for (const maxConcurrentJobs of [0, -1, NaN, 0.5]) assert.throws(() => new XlsxWorkerParser(() => {}, { maxConcurrentJobs }), /concurrency/);
+});
+
+test('worker exports terminate on timeout, abort and clone errors, and reject oversized text before cloning', async () => {
+    const workbook = await read(worksheetXml('<row r="1"><c r="A1" t="inlineStr"><is><t>large text</t></is></c></row>'));
+    for (const mode of ['abort', 'timeout', 'clone']) {
+        const worker = { terminated: false, postMessage() { if (mode === 'clone') throw new Error('clone failed'); }, terminate() { this.terminated = true; } };
+        const controller = new AbortController();
+        const result = new XlsxWorkerParser(() => worker).toHTML(workbook, { signal: controller.signal, timeoutMs: mode === 'timeout' ? 5 : 1000 });
+        if (mode === 'abort') controller.abort();
+        await assert.rejects(result); assert.equal(worker.terminated, true);
+    }
+    let created = false;
+    await assert.rejects(new XlsxWorkerParser(() => { created = true; }).toHTML(workbook, { limits: { maxWorkbookTextLength: 1 } }), /Workbook text/);
+    assert.equal(created, false);
+});
+
+test('worker XML floods reject within a 128 MiB heap and a five-second deadline', () => {
+    for (const mode of ['nodes', 'attributes']) {
+        const child = spawnSync(process.execPath, ['--max-old-space-size=128', fileURLToPath(new URL('./worker-resource-child.mjs', import.meta.url)), mode], { timeout: 5000, encoding: 'utf8' });
+        assert.equal(child.error, undefined, child.error?.message);
+        assert.equal(child.status, 0, child.stderr);
+    }
+});
+
+test('100,000 styled cells, result cloning and preview stay within a measured capacity ceiling', () => {
+    const child = spawnSync(process.execPath, ['--max-old-space-size=384', fileURLToPath(new URL('./worker-resource-child.mjs', import.meta.url)), 'capacity'], { timeout: 20000, encoding: 'utf8' });
+    assert.equal(child.error, undefined, child.error?.message);
+    assert.equal(child.status, 0, child.stderr);
+    const metrics = JSON.parse(child.stdout.trim());
+    // Includes ZIP fixture generation, the worker's XML implementation and clone.
+    // This smoke ceiling is not a guarantee of browser or low-memory device use.
+    assert.ok(metrics.peakRssBytes < 768 * 1024 * 1024, JSON.stringify(metrics));
+    console.log(`worker capacity metrics: ${JSON.stringify(metrics)}`);
+});
+
+test('worker timeout values cannot wrap the platform timer and abort during creation is respected', async () => {
+    let created = false;
+    const client = new XlsxWorkerParser(() => { created = true; });
+    for (const timeoutMs of [0, -1, Infinity, NaN, 0.5, 2147483648]) {
+        await assert.rejects(client.readFile(new ArrayBuffer(1), { timeoutMs }), /Invalid parsing timeout/);
+        await assert.rejects(client.toHTML({ workSheets: [] }, { timeoutMs }), /Invalid parsing timeout/);
+    }
+    assert.equal(created, false);
+    const controller = new AbortController();
+    const worker = { terminated: false, postMessage() { assert.fail('Aborted job must not be posted'); }, terminate() { this.terminated = true; } };
+    const result = new XlsxWorkerParser(() => { controller.abort(); return worker; }).readFile(new ArrayBuffer(1), { signal: controller.signal });
+    await assert.rejects(result, { name: 'AbortError' });
+    assert.equal(worker.terminated, true);
 });
