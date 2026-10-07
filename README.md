@@ -1,17 +1,35 @@
-# Xlsx-to-js
+# Xlsx-to-js (HYKER fork)
 
 A TypeScript-based library for parsing Excel (XLSX) with browser support.
 
-[Live demo](https://javier-mora.github.io/xlsx-to-js/)
+This repository is [HYKER's fork](https://github.com/hyker/xlsx-to-js) of [javier-mora/xlsx-to-js](https://github.com/javier-mora/xlsx-to-js), originally created by Javier Mora. It retains the original [MIT license](LICENSE).
+
+This fork adds security and resource limits for untrusted workbooks, bounded paginated previews, cancellable worker parsing and HTML exports, and security, performance, and browser regression tests. The APIs and limits documented below describe this fork.
+
+[Upstream live demo](https://javier-mora.github.io/xlsx-to-js/) — may differ from this fork. To run this fork's demo locally, build the library and follow the development instructions below.
+
+Report issues with this fork in [HYKER's issue tracker](https://github.com/hyker/xlsx-to-js/issues).
 
 ## Getting Started
 ### Installation
 
-With [npm](https://www.npmjs.com/package/xlsx-to-js):
+To use this fork, clone and build it:
 
 ```bash
-npm install --save xlsx-to-js
+git clone https://github.com/hyker/xlsx-to-js.git
+cd xlsx-to-js
+npm ci
+npm run build
 ```
+
+Then, from your application's directory, install the built checkout (replace the path with its location):
+
+```bash
+npm install /absolute/path/to/xlsx-to-js
+```
+
+The public [xlsx-to-js npm package](https://www.npmjs.com/package/xlsx-to-js) is the upstream package. `npm install xlsx-to-js` does not install this fork or guarantee the changes described here.
+
 Import library:
 ```javascript
 import { XlsxParser } from "xlsx-to-js";
