@@ -1,10 +1,15 @@
 name: Validate library and browser previews
 on:
   push:
+    branches:
+      - main
   pull_request:
-  workflow_call:
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -17,9 +22,11 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             examples/vite/package-lock.json
-      - run: npm ci
+      - name: Install dependencies and build library through prepare
+        run: npm ci
       - run: npm ci --prefix examples/vite
-      - run: npm test
+      - run: npm run typecheck
+      - run: node --test tests/*.test.mjs
       - run: XLSX_XML_PARSER=xmldom node --test tests/*.test.mjs
       - run: npx tsc --noEmit -p examples/vite/tsconfig.json
       - run: npx playwright install --with-deps chromium firefox webkit

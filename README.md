@@ -268,6 +268,8 @@ For the demo, run `npm ci --prefix examples/vite`, `npx tsc --noEmit -p examples
 
 Run `npm run test:xml-worker` to repeat the correctness and adversarial suites with the worker's XML parser. For browser validation, install example dependencies and run `npx playwright install --with-deps chromium firefox webkit`, then `npm run test:browser`. Browser tests cover sample files, a 100,000-cell styled date workbook, both pagination axes, upload preflight, cancellation, stale loads, malformed XML, embedded drawing decoding and page clipping, and merge/header alignment in previews and full exports. Chromium's large-sheet test uses 4× CPU throttling. Tests attach parse, HTML-generation, DOM-insertion, first-display, display-wait, scroll, and available main-thread heap measurements to the Playwright report. Heap numbers exclude worker memory, and timings are environment-specific. CI runs both XML suites, browser checks, and the demo build.
 
+One validation workflow runs on pull requests, pushes to `main`, and manual dispatches. Newer runs on the same ref cancel older runs. CI builds the library once through `npm ci`'s `prepare` hook and builds Storybook for validation. Publishing the demo requires a separate hosting setup.
+
 **Supported Features**
 - **Cell Content:** strings, numbers, dates (basic serial-date -> locale string), formulas (stored, not evaluated).
 - **Merged Cells:** respects merge ranges and renders proper `rowspan/colspan`.
