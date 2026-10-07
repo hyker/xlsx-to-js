@@ -55,7 +55,7 @@ const fullHtml = xlsxParser.toHTML(workbook);
 document.getElementById('container')!.innerHTML = fullHtml;
 ```
 
-- Render a single sheet (recommended for performance in UIs with tabs):
+- Render a single sheet as full HTML (use the paginated API below for large interactive previews):
 ```ts
 const xlsxParser = new XlsxParser();
 const workbook = await xlsxParser.readFile(file, {
@@ -74,14 +74,88 @@ Notes:
 - Pass `styles: true` to include cell fonts, colors, alignment, borders, and fills.
 - Pass `drawings: true` to include images, shapes, and textboxes positioned like in Excel.
 - The generated HTML includes column letters and row numbers. It also respects merged cells and most layout details.
-- Both rendering APIs use the same layout, styles, and drawings.
+- Full and paginated rendering share styles and drawing layout. Styles are deduplicated into CSS classes.
 - Hidden and very-hidden sheets are retained in `workbook.workSheets` with their `state`, but omitted from HTML by default. To display them deliberately, pass `{ includeHiddenSheets: true }` as the second argument to `toHTML`, or the third argument to `toHTMLSheet`. Sheet indexes always refer to the original workbook order.
+
+### Bounded production previews
+
+Use `toHTMLSheetPage` for interactive previews. It defaults to 100 visible rows and 50 visible columns and rejects page sizes larger than 5,000 positions. Page indexes are zero-based; cell references and returned coordinate bounds are one-based Excel positions. Hidden rows and columns are omitted from pages. Merges crossing a page boundary are clipped and retain their original anchor value if that value was parsed. Values omitted by `skipHiddenRows` are never restored. Intersecting drawings are offset and clipped to the page.
+
+```ts
+import { XlsxParser, PREVIEW_LIMITS } from 'xlsx-to-js';
+
+const parser = new XlsxParser();
+const workbook = await parser.readFile(bytes, {
+  dense: false,
+  styles: true,
+  limits: PREVIEW_LIMITS,
+});
+const page = parser.toHTMLSheetPage(workbook, 0, {
+  limits: PREVIEW_LIMITS,
+  rowPage: 0,
+  columnPage: 0,
+  pageRows: 100,
+  pageColumns: 50,
+});
+container.innerHTML = page.html;
+// Use page.totalRowPages / page.totalColumnPages for navigation.
+// page.rowStart / page.rowEnd refer to original sheet coordinates.
+```
+
+Invalid page indexes throw. An empty or excluded hidden sheet returns zero counts. `maxCells` still bounds the entire sheet grid, including drawing expansion, rather than just the page. The existing `toHTML` and `toHTMLSheet` APIs remain full exports and never truncate their output. Do not mount their full output for large interactive sheets.
+
+`PREVIEW_LIMITS` keeps the default 10 MiB upload, 250,000 workbook positions, and other grid/drawing budgets. It allows 16 MiB per archive entry, 64 MiB total expanded archive data, 1,000,000 XML nodes per part, and 2 Mi characters per rendered page. These independent limits can reject a file below the upload or grid cap. Pass the same chosen budgets to parsing and rendering; raising them needs application-specific performance testing.
+
+The demo checks file size before `File.arrayBuffer()`, parses in a worker with a 30-second timeout, displays progress, supports cancellation, and prevents older loads from overwriting newer results. It always previews one sheet and one page at a time. Its full HTML download is an explicit, budget-limited export action.
+
+### Cancellable worker parsing
+
+Native browser `DOMParser` is unavailable in workers. The package's worker entry bundles a strict `@xmldom/xmldom` parser that rejects parser diagnostics, including recoverable XML errors. Import this entry only from a dedicated module worker.
+
+Create `xlsx.worker.ts` for a bundler such as Vite:
+
+```ts
+import 'xlsx-to-js/worker';
+```
+
+Then use the worker client:
+
+```ts
+import { XlsxWorkerParser, PREVIEW_LIMITS } from 'xlsx-to-js';
+
+const parser = new XlsxWorkerParser(() =>
+  new Worker(new URL('./xlsx.worker.ts', import.meta.url), { type: 'module' })
+);
+const controller = new AbortController();
+if (file.size > PREVIEW_LIMITS.maxFileBytes) throw new Error('File too large');
+const workbook = await parser.readFile(await file.arrayBuffer(), {
+  dense: false,
+  styles: true,
+  limits: PREVIEW_LIMITS,
+  signal: controller.signal,
+  timeoutMs: 30_000,
+  onProgress: progress => console.log(progress.phase, progress.completedSheets),
+});
+// Calling controller.abort() during readFile terminates its worker.
+```
+
+Each call owns a worker that is terminated on success, error, timeout, or cancellation. Input bytes are cloned and remain available to the caller. The returned workbook is structured-cloned once to the caller. A worker protects responsiveness and enables interruption; it does not impose a browser memory ceiling. Use a request generation token to ignore obsolete file reads as well as obsolete parser results. Catch `AbortError` separately when cancellation is a normal user action.
+
+Direct `XlsxParser.readFile` also accepts `signal` and `onProgress`, but cancellation is cooperative at parsing boundaries and cannot interrupt a running synchronous XML parse. For expensive inputs, use the worker client.
+
+Parsed cells with the same resolved style share a style object. Before customizing one cell, replace its style with a copy (and clone its border when changing borders) rather than mutating a shared object.
+
+### Supported input and preview fidelity
+
+This is a bounded XLSX preview reader, not an Excel calculation or editing engine. Supported input is classic, unencrypted XLSX ZIP packages with worksheets; ZIP64, chart sheets, and unsupported required relationships fail explicitly. Formula values come from saved workbook results and may be stale. Numeric, boolean, and date cell values are exposed as strings; basic built-in date format 14 is localized in UTC, and arbitrary number formats are not fully reproduced.
+
+See the limitations below for drawing, theme, font, and layout differences. Validate representative files from the spreadsheet applications used by your users before increasing budgets or promising Excel-equivalent previews.
 
 ### Untrusted workbooks and resource limits
 
 The parser rejects malformed XML, DTD/entity declarations, invalid coordinates and indexes, duplicate cells, overlapping merges, invalid required relationships, archive traversal, duplicate archive paths, and ZIP checksum mismatches. Fonts are serialized as quoted CSS strings; alignment and colors are restricted to supported values. Neither formulas nor external relationships are executed or fetched. Embedded images are restricted to PNG, JPEG, and GIF when rendered.
 
-Budgets apply before grid allocation and during streamed decompression, including when ZIP size metadata is forged. Archive entry and declared expansion limits include unused parts. Grid, merge, and drawing budgets cover the whole workbook; render budgets also cover expansion caused by drawings. `dense: false` avoids allocating empty cells but does not bypass grid budgets.
+Budgets apply before grid allocation and during streamed decompression, including when ZIP size metadata is forged. Archive entry and declared expansion limits include unused parts. Grid, merge, and drawing budgets cover the whole workbook; render budgets also cover expansion caused by drawings. `dense: false` avoids allocating empty cell objects but does not bypass grid budgets. Empty row arrays preserve workbook coordinates.
 
 ```ts
 import { XlsxParser, DEFAULT_LIMITS } from 'xlsx-to-js';
@@ -128,6 +202,8 @@ Run `npm ci` and `npm test`. The test command type-checks, builds, and runs adve
 
 For the demo, run `npm ci --prefix examples/vite`, `npx tsc --noEmit -p examples/vite/tsconfig.json`, and `npm --prefix examples/vite run build-storybook`.
 
+Run `npm run test:xml-worker` to repeat the correctness and adversarial suites with the worker's XML parser. For browser validation, install example dependencies and run `npx playwright install --with-deps chromium firefox webkit`, then `npm run test:browser`. Browser tests cover sample files, a 100,000-cell styled date workbook, both pagination axes, upload preflight, cancellation, stale loads, malformed XML, embedded drawing decoding and page clipping, and merge/header alignment in previews and full exports. Chromium's large-sheet test uses 4× CPU throttling. Tests attach parse, HTML-generation, DOM-insertion, first-display, display-wait, scroll, and available main-thread heap measurements to the Playwright report. Heap numbers exclude worker memory, and timings are environment-specific. CI runs both XML suites, browser checks, and the demo build.
+
 **Supported Features**
 - **Cell Content:** strings, numbers, dates (basic serial-date -> locale string), formulas (stored, not evaluated).
 - **Merged Cells:** respects merge ranges and renders proper `rowspan/colspan`.
@@ -143,11 +219,11 @@ For the demo, run `npm ci --prefix examples/vite`, `npx tsc --noEmit -p examples
 - **Themes/Tint:** theme shade/tint handled pragmáticamente; minor color differences possible versus desktop Excel.
 - **Fonts/MDW:** column width conversion depends on runtime font metrics; small pixel drifts may occur across platforms.
 - **Drawings Coverage:** connectors, grouped shapes, rotations, and complex effects are not fully rendered.
-- **Hidden Rows/Cols:** when `skipHiddenRows: true`, hidden rows are skipped; hidden columns get width 0 but still occupy position.
+- **Hidden Rows/Cols:** when `skipHiddenRows: true`, hidden rows are skipped; full exports retain hidden-column metadata with width 0; paginated previews omit hidden rows and columns while preserving original coordinates.
 - **Print/Views:** print areas, panes freeze, page breaks and advanced view options are not applied to HTML.
 
 **Supported Environments**
-- **Browsers:** modern Chromium/Firefox/Safari (ES2019+, `DOMParser`, `Canvas` for font metrics). Tested on latest Chrome/Edge/Firefox/Safari.
+- **Browsers:** modern Chromium/Firefox/Safari (ES2019+, `DOMParser`, `Canvas` for font metrics). Browser automation covers Chromium, Firefox, and WebKit. WebKit coverage is not a claim of testing every Safari release or device.
 - **Node.js:** intended for browser use. In Node you must polyfill `DOMParser` (e.g., jsdom) to use XML parsing and HTML rendering.
 - **Module Format:** published as ESM; works with bundlers like Vite/Webpack/Rollup.
 

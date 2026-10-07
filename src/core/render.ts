@@ -1,7 +1,7 @@
 import { Workbook } from './workbook/types';
 import { WorkSheet } from './worksheet/types';
 import { Drawing } from './drawing/types';
-import { XlsxLimits, XlsxRenderOptions } from '../types';
+import { XlsxLimits, XlsxRenderOptions, XlsxPageOptions, XlsxSheetPage } from '../types';
 import { boundedNumber, enumValue, escapeHtml, fontFamily, parseRange, resolveLimits, safeColor } from './security';
 
 const CSS = `<style>
@@ -17,6 +17,8 @@ const CSS = `<style>
 class Html {
     private chunks: string[] = [];
     private length = 0;
+    private styleObjects = new WeakMap<object, string>();
+    private rules = new Map<string, string>();
     constructor(private max: number) {}
     add(value: string): void {
         if ((this.length += value.length) > this.max) throw new Error('HTML exceeds output budget');
@@ -27,7 +29,24 @@ class Html {
         if (str.length > this.max) throw new Error('Text exceeds output budget');
         return escapeHtml(str);
     }
-    finish(): string { return this.chunks.join(''); }
+    cellClass(style: WorkSheet['data'][number][number]['style']): string {
+        if (!style) return '';
+        const cached = this.styleObjects.get(style);
+        if (cached) return cached;
+        const css = cellCss(style).replace(/</g, '\\3c ');
+        // Content-derived names keep independently rendered fragments from sharing
+        // a class name with a different rule. CSS is still validated by cellCss.
+        let a = 2166136261, b = 5381;
+        for (let i = 0; i < css.length; i++) { a = Math.imul(a ^ css.charCodeAt(i), 16777619); b = Math.imul(b, 33) ^ css.charCodeAt(i); }
+        const name = `xl-s-${(a >>> 0).toString(36)}-${(b >>> 0).toString(36)}-${css.length}`;
+        this.styleObjects.set(style, name);
+        this.rules.set(name, css);
+        return name;
+    }
+    finish(): string {
+        if (this.rules.size) this.add(`<style>${Array.from(this.rules, ([name, css]) => `.xl .${name}{${css}}`).join('')}</style>`);
+        return this.chunks.join('');
+    }
 }
 
 const borders = new Map(Object.entries({
@@ -64,6 +83,12 @@ function columnName(index: number): string {
     return result;
 }
 
+function lowerBound(values: number[], target: number): number {
+    let lo = 0, hi = values.length;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (values[mid] < target) lo = mid + 1; else hi = mid; }
+    return lo;
+}
+
 function imageMime(base64: string, limits: XlsxLimits): string {
     if (base64.length > Math.ceil(limits.maxEntryBytes / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(base64)) {
         throw new Error('Invalid image data');
@@ -91,6 +116,32 @@ function validateDrawing(drawing: Drawing, limits: XlsxLimits): void {
 
 interface Budget { cells: number; merges: number; drawings: number }
 
+export function renderSheetPage(workbook: Workbook, index: number, options: XlsxPageOptions = {}): XlsxSheetPage {
+    const limits = resolveLimits(options.limits);
+    if (workbook.workSheets.length > limits.maxSheets) throw new Error('Sheet count exceeds resource limits');
+    if (!Number.isInteger(index) || index < 0 || index >= workbook.workSheets.length) throw new RangeError('Invalid sheet index');
+    const html = new Html(limits.maxHtmlLength);
+    html.add(`<div class="xlwb">${CSS}`);
+    const sheet = workbook.workSheets[index];
+    const page = validatePage(options, limits);
+    const empty = { rowPage: 0, columnPage: 0, totalRowPages: 0, totalColumnPages: 0, totalRows: 0, totalColumns: 0, rowStart: 0, rowEnd: 0, columnStart: 0, columnEnd: 0 };
+    const result = !options.includeHiddenSheets && sheet.state && sheet.state !== 'visible'
+        ? empty : renderSheet(sheet, html, limits, { cells: 0, merges: 0, drawings: 0 }, page) ?? empty;
+    html.add('</div>');
+    return { ...result, html: html.finish() };
+}
+
+function validatePage(options: XlsxPageOptions, limits: XlsxLimits) {
+    const pageRows = boundedNumber(options.pageRows ?? Math.min(100, limits.maxRows), 'page rows', limits.maxRows, 1, true);
+    const pageColumns = boundedNumber(options.pageColumns ?? Math.min(50, limits.maxColumns), 'page columns', limits.maxColumns, 1, true);
+    if (pageRows * pageColumns > 5000) throw new Error('Page exceeds 5,000 cell budget');
+    return {
+        pageRows, pageColumns,
+        rowPage: boundedNumber(options.rowPage ?? 0, 'row page', Number.MAX_SAFE_INTEGER, 0, true),
+        columnPage: boundedNumber(options.columnPage ?? 0, 'column page', Number.MAX_SAFE_INTEGER, 0, true),
+    };
+}
+
 export function renderWorkbook(workbook: Workbook, index: number | undefined, options: XlsxRenderOptions): string {
     const limits = resolveLimits(options.limits);
     if (workbook.workSheets.length > limits.maxSheets) throw new Error('Sheet count exceeds resource limits');
@@ -106,7 +157,7 @@ export function renderWorkbook(workbook: Workbook, index: number | undefined, op
     return html.finish();
 }
 
-function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: Budget): void {
+function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: Budget, page?: ReturnType<typeof validatePage>): Omit<XlsxSheetPage, 'html'> | undefined {
     const range = sheet.dimention ? parseRange(sheet.dimention, limits) : undefined;
     let rows = range?.end.row ?? 0, cols = range?.end.col ?? 0;
     const drawings = sheet.drawings.filter(d => ['image', 'shape', 'textbox'].includes(d.type));
@@ -140,19 +191,21 @@ function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: B
     const defaultRowPx = Math.round(boundedNumber(sheet.defaultRowHeight, 'row height', 409) * 96 / 72);
     // Prefix sums make anchor layout and grid expansion linear, rather than quadratic.
     const widths = [36], heights = [28], x = [0], y = [0];
+    const columnOverrides = new Map<number, number>();
+    for (const style of sheet.columnStyles) {
+        boundedNumber(style.min, 'column range', 16384, 1, true);
+        boundedNumber(style.max, 'column range', 16384, style.min, true);
+        const width = style.hidden ? 0 : colPx(style.width);
+        for (let c = style.min; c <= Math.min(style.max, limits.maxColumns); c++) columnOverrides.set(c, width);
+    }
     const addColumn = () => {
         const col = widths.length;
-        let width = defaultColPx;
-        for (const style of sheet.columnStyles) {
-            boundedNumber(style.min, 'column range', 16384, 1, true);
-            boundedNumber(style.max, 'column range', 16384, style.min, true);
-            if (col >= style.min && col <= style.max) width = style.hidden || style.collapsed ? 0 : colPx(style.width);
-        }
+        const width = columnOverrides.get(col) ?? defaultColPx;
         widths.push(width); x.push(x[col - 1] + (width ? width + 1 : 0));
     };
     const addRow = () => {
         const row = heights.length, style = rowStyles.get(row);
-        const hidden = style ? style.hidden || style.collapsed : sheet.zeroHeight;
+        const hidden = style ? style.hidden : sheet.zeroHeight;
         const height = hidden ? 0 : style ? Math.round(boundedNumber(style.height, 'row height', 409) * 96 / 72) : defaultRowPx;
         heights.push(height); y.push(y[row - 1] + (height ? height + 1 : 0));
     };
@@ -181,45 +234,72 @@ function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: B
         }
     }
     budget.cells += rows * cols;
-    const anchors = new Map<number, { rows: number; cols: number }>(), covered = new Set<number>();
+    const visibleRows = Array.from({ length: rows }, (_, i) => i + 1).filter(r => heights[r] > 0);
+    const visibleCols = Array.from({ length: cols }, (_, i) => i + 1).filter(c => widths[c] > 0);
+    const totalRowPages = page ? Math.ceil(visibleRows.length / page.pageRows) : 1;
+    const totalColumnPages = page ? Math.ceil(visibleCols.length / page.pageColumns) : 1;
+    if (page && (page.rowPage >= Math.max(1, totalRowPages) || page.columnPage >= Math.max(1, totalColumnPages))) throw new RangeError('Page index outside sheet');
+    const selectedRows = page ? visibleRows.slice(page.rowPage * page.pageRows, (page.rowPage + 1) * page.pageRows)
+        : Array.from({ length: rows }, (_, i) => i + 1).filter(r => !sheet.skipHiddenRows || heights[r] > 0);
+    const selectedCols = page ? visibleCols.slice(page.columnPage * page.pageColumns, (page.columnPage + 1) * page.pageColumns)
+        : Array.from({ length: cols }, (_, i) => i + 1);
+    const pageInfo = { rowPage: page?.rowPage ?? 0, columnPage: page?.columnPage ?? 0, totalRowPages, totalColumnPages,
+        totalRows: visibleRows.length, totalColumns: visibleCols.length,
+        rowStart: selectedRows[0] ?? 0, rowEnd: selectedRows[selectedRows.length - 1] ?? 0,
+        columnStart: selectedCols[0] ?? 0, columnEnd: selectedCols[selectedCols.length - 1] ?? 0 };
+    const anchors = new Map<number, { rows: number; cols: number; sourceRow: number; sourceCol: number }>(), covered = new Set<number>();
     for (const ref of sheet.mergeCells) {
         const merge = parseRange(ref, limits);
         if ((budget.merges += merge.area) > limits.maxMergedCells) throw new Error('Merged cells exceed resource limits');
         if (merge.end.row > rows || merge.end.col > cols) throw new Error('Merge outside rendered dimension');
-        const key = (merge.start.row - 1) * cols + merge.start.col - 1;
-        anchors.set(key, { rows: merge.end.row - merge.start.row + 1, cols: merge.end.col - merge.start.col + 1 });
+        const mergeRows = selectedRows.slice(lowerBound(selectedRows, merge.start.row), lowerBound(selectedRows, merge.end.row + 1));
+        const mergeCols = selectedCols.slice(lowerBound(selectedCols, merge.start.col), lowerBound(selectedCols, merge.end.col + 1));
+        const firstRow = mergeRows.find(r => heights[r] > 0), firstCol = mergeCols.find(c => widths[c] > 0);
+        if (firstRow !== undefined && firstCol !== undefined) {
+            const key = (firstRow - 1) * cols + firstCol - 1;
+            anchors.set(key, { rows: mergeRows.filter(r => heights[r] > 0).length, cols: mergeCols.filter(c => widths[c] > 0).length,
+                sourceRow: merge.start.row, sourceCol: merge.start.col });
+        }
         for (let r = merge.start.row; r <= merge.end.row; r++) for (let c = merge.start.col; c <= merge.end.col; c++) {
             const current = (r - 1) * cols + c - 1;
             if (covered.has(current)) throw new Error('Overlapping merged cells');
             covered.add(current);
         }
     }
-    html.add('<div class="xl-wrap"><table class="xl"><colgroup><col style="width:36px">');
-    for (let c = 1; c <= cols; c++) html.add(`<col style="width:${widths[c]}px;${widths[c] ? '' : 'display:none;'}">`);
+    const originX = selectedCols.length ? x[selectedCols[0] - 1] : 0;
+    const originY = selectedRows.length ? y[selectedRows[0] - 1] : 0;
+    html.add(`<div class="xl-wrap"${page ? ' style="overflow:hidden"' : ''}><table class="xl"><colgroup><col style="width:36px">`);
+    for (const c of selectedCols) html.add(`<col style="width:${widths[c]}px;${widths[c] ? '' : 'display:none;'}">`);
     html.add('</colgroup><thead><tr><th class="xl-corner"></th>');
-    for (let c = 1; c <= cols; c++) html.add(`<th class="xl-col" data-col="${c}"${widths[c] ? '' : ' style="display:none"'}>${columnName(c)}</th>`);
+    const letters = new Map(selectedCols.map(c => [c, columnName(c)]));
+    for (const c of selectedCols) html.add(`<th class="xl-col" data-col="${c}"${widths[c] ? '' : ' style="display:none"'}>${letters.get(c)}</th>`);
     html.add('</tr></thead><tbody>');
-    for (let r = 1; r <= rows; r++) {
-        if (sheet.skipHiddenRows && heights[r] === 0) continue;
+    for (const r of selectedRows) {
         html.add(`<tr style="height:${heights[r]}px;${heights[r] ? '' : 'display:none;'}"><th class="xl-row" data-row="${r}">${r}</th>`);
-        for (let c = 1; c <= cols; c++) {
+        for (const c of selectedCols) {
             const key = (r - 1) * cols + c - 1, merge = anchors.get(key);
-            if (covered.has(key) && !merge) continue;
-            const cell = sheet.data[r - 1]?.[c - 1];
+            if (covered.has(key) && !merge) {
+                if (!page && (!widths[c] || !heights[r])) html.add('<td style="display:none"></td>');
+                continue;
+            }
+            const cell = merge ? sheet.data[merge.sourceRow - 1]?.[merge.sourceCol - 1] : sheet.data[r - 1]?.[c - 1];
             let attrs = '';
             if (merge) {
-                const span = sheet.skipHiddenRows ? heights.slice(r, r + merge.rows).filter(h => h > 0).length : merge.rows;
-                attrs = ` rowspan="${span}" colspan="${merge.cols}"`;
+                attrs = ` rowspan="${merge.rows}" colspan="${merge.cols}" data-merge-ref="${columnName(merge.sourceCol)}${merge.sourceRow}"`;
             }
-            const css = `${cellCss(cell?.style)}${widths[c] ? '' : 'display:none;'}`;
-            html.add(`<td class="xl-cell" data-ref="${columnName(c)}${r}"${attrs}${css ? ` style="${escapeHtml(css)}"` : ''}>${html.text(cell?.value ?? '')}</td>`);
+            const styleClass = html.cellClass(cell?.style);
+            html.add(`<td class="xl-cell${styleClass ? ` ${styleClass}` : ''}" data-ref="${letters.get(c)}${r}"${attrs}${widths[c] ? '' : ' style="display:none"'}>${html.text(cell?.value ?? '')}</td>`);
         }
         html.add('</tr>');
     }
     html.add('</tbody></table>');
     if (drawings.length) html.add('<div class="xl-abs">');
     for (const drawing of drawings) {
-        const { left, top, width, height } = rect(drawing);
+        const box = rect(drawing);
+        if (page && (box.left + box.width <= 36 + originX || box.top + box.height <= 28 + originY ||
+            box.left >= 36 + x[(selectedCols[selectedCols.length - 1] ?? 0)] || box.top >= 28 + y[(selectedRows[selectedRows.length - 1] ?? 0)])) continue;
+        const { width, height } = box;
+        const left = box.left - originX, top = box.top - originY;
         const position = `position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;`;
         if (drawing.type === 'image') {
             const mime = imageMime(drawing.base64, limits);
@@ -241,4 +321,5 @@ function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: B
     }
     if (drawings.length) html.add('</div>');
     html.add('</div></div>');
+    return pageInfo;
 }

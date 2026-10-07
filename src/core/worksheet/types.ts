@@ -84,6 +84,8 @@ interface CellData {
  * A two-dimensional grid of cells that are organized into rows and columns.
  */
 export interface WorkSheet {
+    /** Drawing relationship discovered during the worksheet's single XML pass. */
+    drawingRelationshipId?: string;
     state?: 'visible' | 'hidden' | 'veryHidden';
     /** Internal package relationship used to resolve this sheet. */
     relationshipId?: string;

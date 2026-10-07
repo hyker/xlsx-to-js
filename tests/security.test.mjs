@@ -9,7 +9,8 @@ import { XlsxParser, DEFAULT_LIMITS, getRangeDetails } from '../dist/index.js';
 import { NS, REL, DRAW, esc, fixture, zip, worksheetXml, stylesXml, themeXml, workbookXml, relationships, drawingXml, centralEntries } from './fixtures.mjs';
 
 const dom = new JSDOM('<main></main>', {runScripts:'dangerously',virtualConsole:new VirtualConsole()});
-globalThis.DOMParser = dom.window.DOMParser;
+if (process.env.XLSX_XML_PARSER === 'xmldom') await import('../dist/worker.js');
+else globalThis.DOMParser = dom.window.DOMParser;
 const parser = new XlsxParser();
 const read = async (options={}, parserOptions={styles:true}) => parser.readFile(await fixture(options),parserOptions);
 function inspect(html) {
@@ -33,9 +34,10 @@ test('font and alignment payloads cannot escape HTML or add CSS declarations',as
         const w=await read({style:stylesXml({font:payload,horizontal:payload,vertical:payload})});
         for(const html of both(w)) {
             const root=inspect(html), td=root.querySelector('td');
+            const computed=dom.window.getComputedStyle(td);
             assert.equal(root.querySelectorAll('img').length,0);
-            assert.equal(td.style.position,'');assert.equal(td.style.backgroundImage,'');
-            assert.equal(td.style.textAlign,'');assert.equal(td.style.verticalAlign,'bottom');
+            assert.equal(dom.window.getComputedStyle(td).position,'static');assert.equal(dom.window.getComputedStyle(td).backgroundImage,'none');
+            assert.equal(computed.textAlign,'');assert.equal(computed.verticalAlign,'bottom');
         }
     }
 });
@@ -59,7 +61,7 @@ test('renderers revalidate mutable workbook colors, image data and geometry',asy
     const style=w.workSheets[0].data[0][0].style;
     style.fontColor='red;position:fixed';style.fgColor='red;"><img onerror=x>';
     style.border.top={style:'thin',color:'red;background:url(https://example.invalid)'};
-    for(const html of both(w)){const td=inspect(html).querySelector('td');assert.equal(td.style.position,'');assert.equal(td.style.backgroundImage,'');}
+    for(const html of both(w)){const td=inspect(html).querySelector('td');assert.equal(dom.window.getComputedStyle(td).position,'static');assert.equal(dom.window.getComputedStyle(td).backgroundImage,'none');}
     const drawing={type:'shape',position:{from:{col:0,row:0,colOff:0,rowOff:0},to:{col:0,row:0,colOff:0,rowOff:0}},sizeEMU:{cx:9525,cy:9525},properties:{fillColor:'red;"><img onerror=x>',lineColor:'red;position:fixed'}};
     w.workSheets[0].drawings=[drawing];for(const html of both(w))inspect(html);
     drawing.sizeEMU.cx=Infinity;for(const fn of [()=>parser.toHTML(w),()=>parser.toHTMLSheet(w,0)])assert.throws(fn,/drawing geometry/);

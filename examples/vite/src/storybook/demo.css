@@ -249,3 +249,9 @@
     min-height: 420px;
   }
 }
+
+.sb-demo__pages { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.sb-demo__pages button { padding:6px 10px; border:1px solid var(--line); border-radius:8px; background:white; cursor:pointer; }
+.sb-demo button:disabled { opacity:0.5; cursor:default; }
+.sb-demo__pages span { color:var(--muted); font-size:0.8rem; }
+.sb-demo__canvas { max-height:70vh; }

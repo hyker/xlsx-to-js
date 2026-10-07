@@ -1,4 +1,4 @@
-import { XlsxParserOptions, XlsxRenderOptions } from './types';
+import { XlsxParserOptions, XlsxRenderOptions, XlsxPageOptions, XlsxSheetPage } from './types';
 import { parseThemeXml, Theme } from './core/theme';
 import { parseStylesXml, StyleSheet } from './core/style';
 import { parseWorkbookXml, Workbook } from './core/workbook';
@@ -8,11 +8,13 @@ import { Drawing, MediaFile } from './core/drawing/types';
 import { parseDrawingXml } from './core/drawing';
 import { Archive, readRelationships, Relationship, relationshipType, toBase64 } from './core/archive';
 import { parseRange, resolveLimits } from './core/security';
-import { getElementByName } from './core/utils';
-import { parseXml, relationshipId } from './core/xml';
-import { renderWorkbook } from './core/render';
+import { renderWorkbook, renderSheetPage } from './core/render';
 
 export class XlsxParser {
+    /** Bounded preview with original coordinates and merges clipped to the page. */
+    toHTMLSheetPage(workbook: Workbook, sheetIndex: number, options: XlsxPageOptions = {}): XlsxSheetPage {
+        return renderSheetPage(workbook, sheetIndex, options);
+    }
     /** Render visible sheets using the same layout and validation as toHTMLSheet. */
     toHTML(workbook: Workbook, options: XlsxRenderOptions = {}): string {
         return renderWorkbook(workbook, undefined, options);
@@ -25,13 +27,19 @@ export class XlsxParser {
     }
 
     async readFile(file: ArrayBuffer, options: XlsxParserOptions = {}): Promise<Workbook> {
+        const checkAbort = () => { if (options.signal?.aborted) throw new DOMException('Parsing cancelled', 'AbortError'); };
+        checkAbort();
         const limits = resolveLimits(options.limits);
+        options.onProgress?.({ phase: 'archive', completedSheets: 0, totalSheets: 0 });
+        checkAbort();
         const archive = await Archive.open(file, limits);
+        checkAbort();
         const rootRels = await readRelationships(archive, '', limits);
         const root = [...rootRels.values()].filter(rel => relationshipType(rel, 'officeDocument'));
         if (root.length !== 1 || root[0].external) throw new Error('Invalid workbook relationship');
         const workbookPath = root[0].target;
         const workbook = parseWorkbookXml(await archive.text(workbookPath), limits);
+        options.onProgress?.({ phase: 'metadata', completedSheets: 0, totalSheets: workbook.workSheets.length });
         const relationships = await readRelationships(archive, workbookPath, limits);
         const findPart = (kind: string): Relationship | undefined => {
             const rels = [...relationships.values()].filter(rel => relationshipType(rel, kind));
@@ -50,12 +58,17 @@ export class XlsxParser {
         const drawingCache = new Map<string, Drawing[]>();
         const sheetParts = new Set<string>();
         let cells = 0, merges = 0, drawingCount = 0;
+        let completedSheets = 0;
         for (const sheet of workbook.workSheets) {
+            checkAbort();
+            options.onProgress?.({ phase: 'worksheet', completedSheets: completedSheets++, totalSheets: workbook.workSheets.length, sheetName: sheet.name });
             const rel = relationships.get(sheet.relationshipId!);
             if (!rel || rel.external || !relationshipType(rel, 'worksheet') || sheetParts.has(rel.target)) throw new Error('Invalid worksheet relationship');
             sheetParts.add(rel.target);
             const xml = await archive.text(rel.target);
-            const parsed = parseWorksheetXml(xml, style, sharedStrings, options.dense ?? false, options.skipHiddenRows ?? false, limits, workbook.date1904, options.styles ?? false);
+            checkAbort();
+            const parsed = parseWorksheetXml(xml, style, sharedStrings, options.dense ?? false, options.skipHiddenRows ?? false, limits, workbook.date1904, options.styles ?? false,
+                { cells: limits.maxCells - cells, merges: limits.maxMergedCells - merges });
             if (parsed.dimention) {
                 const { end } = parseRange(parsed.dimention, limits);
                 cells += end.row * end.col;
@@ -64,11 +77,9 @@ export class XlsxParser {
             if (cells > limits.maxCells || merges > limits.maxMergedCells) throw new Error('Workbook grid exceeds resource limits');
             Object.assign(sheet, parsed, { id: sheet.id, name: sheet.name, state: sheet.state, relationshipId: sheet.relationshipId });
             if (!options.drawings) continue;
-            const doc = parseXml(xml, 'worksheet', limits);
-            const drawing = getElementByName(doc.documentElement, 'drawing');
-            if (!drawing) continue;
+            if (parsed.drawingRelationshipId === undefined) continue;
             const sheetRels = await readRelationships(archive, rel.target, limits);
-            const drawingRel = sheetRels.get(relationshipId(drawing));
+            const drawingRel = sheetRels.get(parsed.drawingRelationshipId);
             if (!drawingRel || drawingRel.external || !relationshipType(drawingRel, 'drawing')) throw new Error('Invalid drawing relationship');
             let drawings = drawingCache.get(drawingRel.target);
             if (!drawings) {
@@ -91,6 +102,8 @@ export class XlsxParser {
             if (drawingCount > limits.maxDrawings) throw new Error('Workbook drawings exceed resource limits');
             sheet.drawings = drawings;
         }
+        checkAbort();
+        options.onProgress?.({ phase: 'complete', completedSheets, totalSheets: workbook.workSheets.length });
         return workbook;
     }
 }

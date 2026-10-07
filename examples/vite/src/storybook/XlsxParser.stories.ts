@@ -15,10 +15,10 @@ const meta = {
   argTypes: {
     dense: {
       control: "boolean",
-      description: "Keeps sparse workbooks compact by skipping empty cells in the output matrix.",
+      description: "Allocates independent objects for empty cells. Disable for sparse sheets.",
       table: {
         category: "Parser options",
-        defaultValue: { summary: "true" },
+        defaultValue: { summary: "false" },
       },
     },
     styles: {
@@ -53,9 +53,9 @@ export default meta;
 type Story = StoryObj<DemoArgs>;
 
 export const InteractiveSheetView: Story = {
-  name: "Single-sheet rendering",
+  name: "Paginated sheet preview",
   args: {
-    dense: true,
+    dense: false,
     styles: false,
     drawings: false,
     skipHiddenRows: true,
@@ -70,9 +70,9 @@ export const InteractiveSheetView: Story = {
 };
 
 export const FullWorkbookHtml: Story = {
-  name: "Full workbook HTML",
+  name: "Paginated preview with full HTML export",
   args: {
-    dense: true,
+    dense: false,
     styles: false,
     drawings: false,
     skipHiddenRows: true,

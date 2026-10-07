@@ -1,0 +1,35 @@
+name: Validate library and browser previews
+on:
+  push:
+  pull_request:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            examples/vite/package-lock.json
+      - run: npm ci
+      - run: npm ci --prefix examples/vite
+      - run: npm test
+      - run: XLSX_XML_PARSER=xmldom node --test tests/*.test.mjs
+      - run: npx tsc --noEmit -p examples/vite/tsconfig.json
+      - run: npx playwright install --with-deps chromium firefox webkit
+      - run: npx playwright test
+      - run: npm --prefix examples/vite run build-storybook
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-results
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14

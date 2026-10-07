@@ -1,4 +1,7 @@
 export interface XlsxParserOptions {
+    /** Cooperative cancellation. Use XlsxWorkerParser to interrupt synchronous XML work. */
+    signal?: AbortSignal;
+    onProgress?: (progress: XlsxParseProgress) => void;
     /** Resource budgets. All supplied values must be positive safe integers. */
     limits?: Partial<XlsxLimits>;
     /** When the option `dense: false` is passed, parsers will skip empty cells. */
@@ -9,6 +12,37 @@ export interface XlsxParserOptions {
     drawings?: boolean;
     /** When `true`, hidden rows will be skipped during parsing. */
     skipHiddenRows?: boolean;
+}
+
+export interface XlsxParseProgress {
+    phase: 'archive' | 'metadata' | 'worksheet' | 'complete';
+    completedSheets: number;
+    totalSheets: number;
+    sheetName?: string;
+}
+
+/** Zero-based page indexes. Each page is limited to 5,000 grid positions. */
+export interface XlsxPageOptions extends XlsxRenderOptions {
+    rowPage?: number;
+    columnPage?: number;
+    pageRows?: number;
+    pageColumns?: number;
+}
+
+export interface XlsxSheetPage {
+    html: string;
+    rowPage: number;
+    columnPage: number;
+    totalRowPages: number;
+    totalColumnPages: number;
+    /** Visible rows/columns, including expansion needed for drawings. */
+    totalRows: number;
+    totalColumns: number;
+    /** Original one-based sheet coordinates; zero for an empty page. */
+    rowStart: number;
+    rowEnd: number;
+    columnStart: number;
+    columnEnd: number;
 }
 
 export interface XlsxLimits {

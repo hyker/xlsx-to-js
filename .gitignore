@@ -11,3 +11,5 @@ examples/vite/dist/
 *storybook.log
 debug-storybook.log
 storybook-static
+/test-results/
+/playwright-report/

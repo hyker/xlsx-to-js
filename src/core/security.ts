@@ -17,6 +17,15 @@ export const DEFAULT_LIMITS: Readonly<XlsxLimits> = Object.freeze({
     maxHtmlLength: 16 * 1024 * 1024,
 });
 
+/** Budgets for paginated previews. Full-grid and archive limits still apply. */
+export const PREVIEW_LIMITS: Readonly<XlsxLimits> = Object.freeze({
+    ...DEFAULT_LIMITS,
+    maxEntryBytes: 16 * 1024 * 1024,
+    maxTotalBytes: 64 * 1024 * 1024,
+    maxXmlNodes: 1_000_000,
+    maxHtmlLength: 2 * 1024 * 1024,
+});
+
 export function resolveLimits(overrides: Partial<XlsxLimits> = {}): XlsxLimits {
     const limits = { ...DEFAULT_LIMITS };
     for (const key of Object.keys(overrides) as (keyof XlsxLimits)[]) {

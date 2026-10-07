@@ -1,13 +1,14 @@
 import { StyleSheet } from '../style/types';
-import { excelSerialToJSDate, getChildByName, getChildrenByName, getElementByName, getElementsByName, getRangeArray, getSheetDimension } from '../utils';
+import { excelSerialToJSDate, getChildByName, getChildrenByName, getElementByName, getElementsByName } from '../utils';
 import { WorkSheet } from './types';
 import { XlsxLimits } from '../../types';
 import { boundedNumber, parseRange, parseReference, resolveLimits } from '../security';
-import { parseXml } from '../xml';
+import { parseXml, relationshipId } from '../xml';
 
 export const parseWorksheetXml = (
     str: string, styleSheet: StyleSheet, sharedStrings: string[], dense: boolean, skipHiddenRows: boolean,
     limits: XlsxLimits = resolveLimits(), date1904 = false, stylesEnabled = true,
+    remaining = { cells: limits.maxCells, merges: limits.maxMergedCells },
 ): WorkSheet => {
     const worksheet: WorkSheet = {
         id: 0, name: '', dimention: '', data: [], columnStyles: [], rowStyles: [], mergeCells: [], drawings: [],
@@ -16,11 +17,17 @@ export const parseWorksheetXml = (
     };
     const doc = parseXml(str, 'worksheet', limits);
     const root = doc.documentElement;
+    const drawing = getChildByName(root, 'drawing');
+    if (drawing) worksheet.drawingRelationshipId = relationshipId(drawing);
     const data = getChildByName(root, 'sheetData');
     if (!data) throw new Error('Worksheet is missing sheetData');
     const dimension = getChildByName(root, 'dimension');
     const declared = dimension ? parseRange(dimension.getAttribute('ref') ?? '', limits) : undefined;
-    worksheet.dimention = dimension?.getAttribute('ref') ?? getSheetDimension(data, limits);
+    const checkGrid = (row: number, col: number) => {
+        if (row * col > remaining.cells) throw new Error('Workbook grid exceeds resource limits');
+    };
+    if (declared) checkGrid(declared.end.row, declared.end.col);
+    worksheet.dimention = dimension?.getAttribute('ref') ?? '';
     const format = getChildByName(root, 'sheetFormatPr');
     const isTrue = (v: string | null): boolean => v === '1' || v === 'true';
     if (format) {
@@ -45,17 +52,21 @@ export const parseWorksheetXml = (
         const ref = merge.getAttribute('ref') ?? '';
         const range = parseRange(ref, limits);
         if ((mergedArea += range.area) > limits.maxMergedCells) throw new Error('Merged cells exceed resource limits');
+        if (mergedArea > remaining.merges) throw new Error('Workbook grid exceeds resource limits');
         for (let r = range.start.row; r <= range.end.row; r++) for (let c = range.start.col; c <= range.end.col; c++) {
             const key = (r - 1) * limits.maxColumns + c - 1;
             if (merged.has(key)) throw new Error('Overlapping merged cells');
             merged.add(key);
         }
         maxRow = Math.max(maxRow, range.end.row); maxCol = Math.max(maxCol, range.end.col);
+        checkGrid(maxRow, maxCol);
         worksheet.mergeCells.push(ref);
     }
     const rows = getChildrenByName(data, 'row');
     if (rows.length > limits.maxRows) throw new Error('Rows exceed resource limits');
     const rowIds = new Set<number>(), refs = new Set<string>();
+    const resolvedStyles = new Map<string, NonNullable<WorkSheet['data'][number][number]['style']>>();
+    let dateFormatter: Intl.DateTimeFormat | undefined;
     let previousRow = 0;
     for (const row of rows) {
         const rowIndex = boundedNumber(row.getAttribute('r') ?? previousRow + 1, 'row index', limits.maxRows, 1, true);
@@ -76,6 +87,7 @@ export const parseWorksheetXml = (
             refs.add(ref);
             if (refs.size > limits.maxCells) throw new Error('Cells exceed resource limits');
             maxRow = Math.max(maxRow, pos.row); maxCol = Math.max(maxCol, pos.col);
+            checkGrid(maxRow, maxCol);
             const s = cell.getAttribute('s');
             const styleIndex = s === null ? undefined : boundedNumber(s, 'cell style index', styleSheet.cells.length - 1, 0, true);
             const cellStyle = styleIndex === undefined ? styleSheet.cells[0] : styleSheet.cells[styleIndex];
@@ -85,39 +97,49 @@ export const parseWorksheetXml = (
             if (!['n', 's', 'str', 'inlineStr', 'b', 'e', 'd'].includes(type)) throw new Error('Invalid cell type');
             const formula = getElementByName(cell, 'f')?.textContent ?? '';
             let value = type === 'inlineStr'
-                ? getElementsByName(getElementByName(cell, 'is'), 't').filter(t => t.parentElement?.localName !== 'rPh').map(t => t.textContent ?? '').join('')
+                ? getElementsByName(getElementByName(cell, 'is'), 't').filter(t => (t.parentNode as Element | null)?.localName !== 'rPh').map(t => t.textContent ?? '').join('')
                 : getElementByName(cell, 'v')?.textContent ?? '';
             if (type === 's') value = sharedStrings[boundedNumber(value, 'shared string index', sharedStrings.length - 1, 0, true)];
             else if (type === 'b' && !['0', '1', 'true', 'false'].includes(value)) throw new Error('Invalid boolean cell value');
             else if (type === 'n' && value !== '') {
                 const number = Number(value);
                 if (!Number.isFinite(number)) throw new Error('Invalid numeric cell value');
-                if (cellStyle?.numFmtId === 14) value = excelSerialToJSDate(number, date1904).toLocaleDateString(undefined, { timeZone: 'UTC' });
+                if (cellStyle?.numFmtId === 14) {
+                    dateFormatter ??= new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', year: 'numeric', month: 'numeric', day: 'numeric' });
+                    value = dateFormatter.format(excelSerialToJSDate(number, date1904));
+                }
             }
-            if (skipHiddenRows && (hidden || collapsed)) continue;
-            // Delay grid allocation until all coordinates and ranges are validated.
+            if (skipHiddenRows && hidden) continue;
+            const hAlign = cellStyle?.alignment?.horizontal || (value !== '' && Number.isFinite(Number(value)) ? 'right' : 'left');
+            const styleKey = `${styleIndex ?? 0}:${hAlign}`;
+            let resolvedStyle = resolvedStyles.get(styleKey);
+            if (stylesEnabled && cellStyle && font && fill && !resolvedStyle) {
+                resolvedStyle = {
+                    bgColor: fill.bgColor, fgColor: fill.patternType === 'solid' ? fill.fgColor : '',
+                    fontName: font.name, fontSize: font.size, fontColor: font.color, bold: font.bold, italic: font.italic,
+                    vAlign: cellStyle.alignment?.vertical ?? 'bottom', hAlign,
+                    wrapText: cellStyle.alignment?.wrapText ?? false, border: styleSheet.borders[cellStyle.borderId],
+                };
+                resolvedStyles.set(styleKey, resolvedStyle);
+            }
+            // Allocate only after this cell and the growing grid pass validation.
             if (!worksheet.data[pos.row - 1]) worksheet.data[pos.row - 1] = [];
             worksheet.data[pos.row - 1][pos.col - 1] = {
                 ref, value, formula,
-                style: stylesEnabled && cellStyle && font && fill ? {
-                    bgColor: fill.bgColor, fgColor: fill.patternType === 'solid' ? fill.fgColor : '',
-                    fontName: font.name, fontSize: font.size, fontColor: font.color, bold: font.bold, italic: font.italic,
-                    vAlign: cellStyle.alignment?.vertical ?? 'bottom',
-                    hAlign: cellStyle.alignment?.horizontal || (value !== '' && Number.isFinite(Number(value)) ? 'right' : 'left'),
-                    wrapText: cellStyle.alignment?.wrapText ?? false, border: styleSheet.borders[cellStyle.borderId],
-                } : undefined,
+                style: stylesEnabled ? resolvedStyle : undefined,
             };
         }
     }
     if (maxRow && maxCol) {
         worksheet.dimention = `A1:${columnName(maxCol)}${maxRow}`;
         parseRange(worksheet.dimention, limits);
-        const grid = getRangeArray(worksheet.dimention, dense ? { ref: '', value: '', formula: '' } : undefined, limits);
-        for (let r = 0; r < worksheet.data.length; r++) {
-            if (!worksheet.data[r]) continue;
-            for (const key of Object.keys(worksheet.data[r])) grid[r][Number(key)] = worksheet.data[r][Number(key)];
+        worksheet.data.length = maxRow;
+        for (let r = 0; r < maxRow; r++) {
+            const row = worksheet.data[r] ?? (worksheet.data[r] = []);
+            if (dense) for (let c = 0; c < maxCol; c++) {
+                row[c] ??= { ref: '', value: '', formula: '' };
+            }
         }
-        worksheet.data = grid;
     }
     return worksheet;
 };

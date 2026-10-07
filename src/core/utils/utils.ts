@@ -82,7 +82,12 @@ export function getElementsByName(children?: Element | Document, name?: string):
 }
 
 export function getChildrenByName(parent: Element | undefined, name: string): Element[] {
-  return parent ? Array.from(parent.children).filter(child => matchesName(child, name)) : [];
+  if (!parent) return [];
+  const result: Element[] = [];
+  for (let child = parent.firstChild; child; child = child.nextSibling) {
+    if (child.nodeType === 1 && matchesName(child as Element, name)) result.push(child as Element);
+  }
+  return result;
 }
 
 export function getChildByName(parent: Element | undefined, name: string): Element | undefined {

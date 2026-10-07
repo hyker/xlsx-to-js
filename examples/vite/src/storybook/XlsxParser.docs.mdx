@@ -33,13 +33,13 @@ The examples below use the real package build generated from this repository and
 
 ### Single-sheet rendering
 
-Use `toHTMLSheet()` when the UI needs tabs, lazy rendering, or focused sheet inspection.
+Use `toHTMLSheetPage()` for bounded previews. The demo shows at most 100 visible rows and 50 visible columns, with navigation on both axes and cancellable worker parsing.
 
 <Canvas of={XlsxParserStories.InteractiveSheetView} sourceState="hidden" />
 
 ### Full workbook HTML
 
-Use `toHTML()` when you want one continuous HTML output containing every sheet in the workbook.
+The demo previews one sheet and page at a time. Its full HTML download is an explicit export with resource budgets; it can reject large outputs.
 
 <Canvas of={XlsxParserStories.FullWorkbookHtml} sourceState="hidden" />
 
@@ -58,7 +58,7 @@ Use `toHTML()` when you want one continuous HTML output containing every sheet i
 
 const parser = new XlsxParser();
 const workbook = await parser.readFile(fileArrayBuffer, {
-  dense: true,
+  dense: false,
   styles: true,
   drawings: true,
   skipHiddenRows: true,
@@ -72,14 +72,14 @@ const workbook = await parser.readFile(fileArrayBuffer, {
   dark
   code={`const parser = new XlsxParser();
 const workbook = await parser.readFile(fileArrayBuffer, {
-  dense: true,
+  dense: false,
   styles: true,
   drawings: true,
   skipHiddenRows: true,
 });
 
-const html = parser.toHTMLSheet(workbook, 0);
-document.getElementById("sheet-view")!.innerHTML = html;`}
+const page = parser.toHTMLSheetPage(workbook, 0);
+document.getElementById("sheet-view")!.innerHTML = page.html;`}
 />
 
 ### Render the full workbook
@@ -89,7 +89,7 @@ document.getElementById("sheet-view")!.innerHTML = html;`}
   dark
   code={`const parser = new XlsxParser();
 const workbook = await parser.readFile(fileArrayBuffer, {
-  dense: true,
+  dense: false,
   styles: true,
   drawings: true,
   skipHiddenRows: true,

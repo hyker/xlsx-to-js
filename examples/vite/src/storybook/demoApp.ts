@@ -1,4 +1,4 @@
-import { XlsxParser } from "../../../../dist/index.js";
+import { XlsxParser, XlsxWorkerParser, PREVIEW_LIMITS, type Workbook, type XlsxSheetPage } from "../../../../dist/index.js";
 import { base64ToArrayBuffer, sampleWorkbookBase64 } from "./sampleWorkbook";
 import "./demo.css";
 import { setError, setStatus } from './status';
@@ -16,14 +16,7 @@ type StoryArgs = ParserOptions & {
   mode: DemoMode;
 };
 
-type WorkbookLike = {
-  workSheets: Array<{
-    name: string;
-    state?: string;
-    data: unknown[];
-    mergeCells: string[];
-  }>;
-};
+export type XlsxDemoElement = HTMLElement & { dispose: () => void };
 
 const parser = new XlsxParser();
 
@@ -61,8 +54,8 @@ function createDownloadUrl(): string {
   return URL.createObjectURL(blob);
 }
 
-export function createXlsxDemo(args: StoryArgs): HTMLElement {
-  const root = document.createElement("div");
+export function createXlsxDemo(args: StoryArgs): XlsxDemoElement {
+  const root = Object.assign(document.createElement("div"), { dispose: () => {} });
   root.className = "sb-demo";
 
   const options: ParserOptions = {
@@ -72,9 +65,15 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
     skipHiddenRows: args.skipHiddenRows,
   };
 
-  let currentWorkbook: WorkbookLike | null = null;
+  let currentWorkbook: Workbook | null = null;
+  const workerParser = new XlsxWorkerParser(() => new Worker(new URL('./parserWorker.ts', import.meta.url), { type: 'module' }));
+  let loadGeneration = 0;
+  let currentLoad: AbortController | undefined;
+  let rowPage = 0, columnPage = 0;
+  let currentPage: XlsxSheetPage | undefined;
+  let disposed = false;
   let currentSheetIndex = 0;
-  let currentUrl = createDownloadUrl();
+  const currentUrl = createDownloadUrl();
 
   root.innerHTML = `
     <div class="sb-demo__shell">
@@ -89,6 +88,9 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
               </a>
             </div>
             <input class="sb-demo__input" data-action="upload" type="file" accept=".xlsx" />
+            <button class="sb-demo__button" type="button" data-action="cancel" disabled>Cancel loading</button>
+            <p class="sb-demo__small">Up to 10 MiB and 250,000 sheet positions across the workbook. Additional limits apply to XML, images, and merged cells.</p>
+            <p class="sb-demo__small">Preview uses saved formula results. Some number formats, drawings, and Excel layout features have limited support.</p>
           </section>
 
           <section class="sb-demo__section">
@@ -105,18 +107,22 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
         <section class="sb-demo__viewer">
           <div class="sb-demo__toolbar">
             <div>
-              <h2>${args.mode === "sheet" ? "Single-sheet rendering" : "Full workbook HTML"}</h2>
+              <h2>${args.mode === "sheet" ? "Workbook preview" : "Workbook preview and export"}</h2>
               <div class="sb-demo__toolbar-copy">
-                ${
-                  args.mode === "sheet"
-                    ? "Switch sheets and inspect the rendered output."
-                    : "Render every sheet in one continuous HTML output."
-                }
+                Browse one sheet at a time using row and column pages.
               </div>
             </div>
             <div class="sb-demo__meta" data-role="meta"></div>
           </div>
           <div class="sb-demo__tabs" data-role="tabs"></div>
+          <nav class="sb-demo__pages" aria-label="Spreadsheet pages">
+            <button type="button" data-action="row-prev" disabled>Previous rows</button>
+            <button type="button" data-action="row-next" disabled>Next rows</button>
+            <button type="button" data-action="col-prev" disabled>Previous columns</button>
+            <button type="button" data-action="col-next" disabled>Next columns</button>
+            <span data-role="page-info" aria-live="polite"></span>
+            ${args.mode === 'all' ? '<button type="button" data-action="export" disabled>Download full HTML</button>' : ''}
+          </nav>
           <div class="sb-demo__canvas ${args.mode === "all" ? "sb-demo__full-html" : ""}" data-role="canvas">
             <div class="sb-demo__empty">
               <div>
@@ -137,10 +143,13 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
   const canvas = root.querySelector('[data-role="canvas"]') as HTMLDivElement;
   const sampleButton = root.querySelector('[data-action="sample"]') as HTMLButtonElement;
   const uploadInput = root.querySelector('[data-action="upload"]') as HTMLInputElement;
-  const downloadLink = root.querySelector('[data-action="download"]') as HTMLAnchorElement;
+  const cancelButton = root.querySelector('[data-action="cancel"]') as HTMLButtonElement;
+  const pageInfo = root.querySelector('[data-role="page-info"]') as HTMLSpanElement;
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
 
   [
-    createOption("dense", "dense", "Keeps the cell matrix compact when the workbook contains empty cells.", options),
+    createOption("dense", "dense", "Allocates objects for empty cells; uses more memory on sparse sheets.", options),
     createOption("styles", "styles", "Enables parsing for styles and colors when the workbook includes them.", options),
     createOption("drawings", "drawings", "Enables parsing for images and drawing objects when they exist in the file.", options),
     createOption(
@@ -157,7 +166,7 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
     "The demo is ready. The embedded sample includes two sheets and one merged range.",
   );
 
-  function updateMeta(workbook: WorkbookLike) {
+  function updateMeta(workbook: Workbook) {
     const totalSheets = workbook.workSheets.length;
     const totalRows = workbook.workSheets.reduce((sum, sheet) => sum + sheet.data.length, 0);
     const totalMerges = workbook.workSheets.reduce((sum, sheet) => sum + sheet.mergeCells.length, 0);
@@ -169,11 +178,7 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
     `;
   }
 
-  function renderSheetTabs(workbook: WorkbookLike) {
-    if (args.mode !== "sheet") {
-      tabs.innerHTML = "";
-      return;
-    }
+  function renderSheetTabs(workbook: Workbook) {
 
     tabs.innerHTML = "";
     workbook.workSheets.forEach((sheet, index) => {
@@ -188,53 +193,153 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
           return;
         }
 
-        canvas.innerHTML = parser.toHTMLSheet(currentWorkbook as never, currentSheetIndex);
+        rowPage = columnPage = 0;
+        renderPage();
         renderSheetTabs(currentWorkbook);
       });
       tabs.append(tab);
     });
   }
 
-  async function parseWorkbook(buffer: ArrayBuffer, sourceLabel: string) {
-    setStatus(status, "Processing", `Reading ${sourceLabel} with the selected parser options.`);
-
+  function renderPage() {
+    if (!currentWorkbook) return false;
+    const start = performance.now();
     try {
-      currentWorkbook = (await parser.readFile(buffer, options)) as WorkbookLike;
-      currentSheetIndex = Math.max(0, currentWorkbook.workSheets.findIndex(sheet => !sheet.state || sheet.state === 'visible'));
-
-      updateMeta(currentWorkbook);
-      renderSheetTabs(currentWorkbook);
-      canvas.innerHTML =
-        args.mode === "sheet"
-          ? parser.toHTMLSheet(currentWorkbook as never, currentSheetIndex)
-          : parser.toHTML(currentWorkbook as never);
-
-      setStatus(
-        status,
-        "Workbook loaded",
-        `${sourceLabel} was parsed successfully. You can change options and load it again.`,
-      );
+      currentPage = parser.toHTMLSheetPage(currentWorkbook, currentSheetIndex, {
+        limits: PREVIEW_LIMITS, rowPage, columnPage, pageRows: 100, pageColumns: 50,
+      });
+      const generated = performance.now();
+      canvas.innerHTML = currentPage.html;
+      canvas.scrollTop = canvas.scrollLeft = 0;
+      const inserted = performance.now();
+      root.dataset.renderMetrics = JSON.stringify({ htmlMs: generated - start, domMs: inserted - generated, htmlLength: currentPage.html.length });
+      const p = currentPage;
+      pageInfo.textContent = p.totalRows && p.totalColumns
+        ? `Rows ${p.rowStart}–${p.rowEnd} (page ${p.rowPage + 1}/${p.totalRowPages}); columns ${p.columnStart}–${p.columnEnd} (page ${p.columnPage + 1}/${p.totalColumnPages})`
+        : 'No visible cells';
+      for (const [action, enabled] of Object.entries({
+        'row-prev': p.rowPage > 0, 'row-next': p.rowPage + 1 < p.totalRowPages,
+        'col-prev': p.columnPage > 0, 'col-next': p.columnPage + 1 < p.totalColumnPages, export: true,
+      })) {
+        const button = root.querySelector<HTMLButtonElement>(`[data-action="${action}"]`);
+        if (button) button.disabled = !enabled;
+      }
+      return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      setStatus(status, "Parsing failed", message);
+      const message = error instanceof Error ? error.message : String(error);
       setError(canvas, message);
-      tabs.innerHTML = "";
-      meta.innerHTML = "";
+      setStatus(status, 'Preview unavailable', message);
+      pageInfo.textContent = 'Preview unavailable';
+      root.querySelectorAll<HTMLButtonElement>('.sb-demo__pages button').forEach(button => button.disabled = true);
+      return false;
     }
   }
 
-  sampleButton.addEventListener("click", () => {
-    void parseWorkbook(base64ToArrayBuffer(sampleWorkbookBase64), "the embedded sample workbook");
-  });
+  function cancelLoad() {
+    loadGeneration++;
+    currentLoad?.abort();
+    currentLoad = undefined;
+    cancelButton.disabled = true;
+    root.removeAttribute('aria-busy');
+  }
 
-  uploadInput.addEventListener("change", async () => {
+  async function loadWorkbook(read: () => Promise<ArrayBuffer>, sourceLabel: string) {
+    cancelLoad();
+    const generation = loadGeneration;
+    const controller = currentLoad = new AbortController();
+    const snapshot = { ...options, limits: PREVIEW_LIMITS };
+    const start = performance.now();
+    cancelButton.disabled = false;
+    delete root.dataset.firstDisplayMs;
+    root.setAttribute('aria-busy', 'true');
+    setStatus(status, 'Processing', `Reading ${sourceLabel}.`);
+    try {
+      const buffer = await read();
+      if (generation !== loadGeneration || disposed) return;
+      const parseStart = performance.now();
+      const workbook = await workerParser.readFile(buffer, {
+        ...snapshot, signal: controller.signal,
+        onProgress: progress => {
+          if (generation !== loadGeneration || disposed) return;
+          const detail = progress.phase === 'worksheet'
+            ? `Sheet ${progress.completedSheets + 1} of ${progress.totalSheets}: ${progress.sheetName}`
+            : progress.phase === 'complete' ? 'Preparing preview' : 'Reading workbook metadata';
+          setStatus(status, 'Processing', detail);
+        },
+      });
+      if (generation !== loadGeneration || disposed) return;
+      root.dataset.parseMs = String(performance.now() - parseStart);
+      currentWorkbook = workbook;
+      currentSheetIndex = workbook.workSheets.findIndex(sheet => !sheet.state || sheet.state === 'visible');
+      rowPage = columnPage = 0;
+      updateMeta(workbook);
+      renderSheetTabs(workbook);
+      let rendered = true;
+      if (currentSheetIndex < 0) {
+        canvas.textContent = 'This workbook has no visible sheets.';
+        pageInfo.textContent = '';
+        root.querySelectorAll<HTMLButtonElement>('.sb-demo__pages button').forEach(button => button.disabled = true);
+      } else rendered = renderPage();
+      root.dataset.loadMs = String(performance.now() - start);
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (generation === loadGeneration && !disposed) root.dataset.firstDisplayMs = String(performance.now() - start);
+      }));
+      if (rendered) setStatus(status, 'Workbook loaded', `${sourceLabel} is ready.`);
+    } catch (error) {
+      if (generation !== loadGeneration || disposed) return;
+      currentWorkbook = null;
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(status, 'Loading failed', message);
+      setError(canvas, message);
+      tabs.replaceChildren();
+      meta.replaceChildren();
+      pageInfo.textContent = '';
+      root.querySelectorAll<HTMLButtonElement>('.sb-demo__pages button').forEach(button => button.disabled = true);
+    } finally {
+      if (generation === loadGeneration && !disposed) {
+        currentLoad = undefined;
+        cancelButton.disabled = true;
+        root.removeAttribute('aria-busy');
+      }
+    }
+  }
+
+  cancelButton.addEventListener('click', () => {
+    cancelLoad();
+    setStatus(status, 'Loading cancelled', 'You can load another workbook.');
+  });
+  sampleButton.addEventListener('click', () => {
+    void loadWorkbook(async () => base64ToArrayBuffer(sampleWorkbookBase64), 'the embedded sample workbook');
+  });
+  uploadInput.addEventListener('change', () => {
     const file = uploadInput.files?.[0];
-    if (!file) {
+    if (!file) return;
+    if (file.size > PREVIEW_LIMITS.maxFileBytes) {
+      cancelLoad();
+      setStatus(status, 'File too large', 'Choose an XLSX file no larger than 10 MiB.');
       return;
     }
-
-    const buffer = await file.arrayBuffer();
-    void parseWorkbook(buffer, file.name);
+    void loadWorkbook(() => file.arrayBuffer(), file.name);
+    uploadInput.value = '';
+  });
+  for (const [action, dr, dc] of [['row-prev', -1, 0], ['row-next', 1, 0], ['col-prev', 0, -1], ['col-next', 0, 1]] as const) {
+    root.querySelector(`[data-action="${action}"]`)?.addEventListener('click', () => {
+      rowPage += dr;
+      columnPage += dc;
+      renderPage();
+    });
+  }
+  root.querySelector('[data-action="export"]')?.addEventListener('click', () => {
+    if (!currentWorkbook) return;
+    try {
+      const html = parser.toHTML(currentWorkbook, { limits: PREVIEW_LIMITS });
+      const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'workbook.html';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) { setStatus(status, 'Export unavailable', error instanceof Error ? error.message : String(error)); }
   });
 
   optionsHost.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((input) => {
@@ -249,11 +354,12 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
     });
   });
 
-  downloadLink.addEventListener("click", () => {
+  root.dispose = () => {
+    disposed = true;
+    cancelLoad();
     URL.revokeObjectURL(currentUrl);
-    currentUrl = createDownloadUrl();
-    downloadLink.href = currentUrl;
-  });
+    currentWorkbook = null;
+  };
 
   return root;
 }

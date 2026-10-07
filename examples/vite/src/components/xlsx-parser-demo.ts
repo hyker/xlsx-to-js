@@ -1,5 +1,5 @@
 import { LitElement, html } from "lit";
-import { createXlsxDemo } from "../storybook/demoApp";
+import { createXlsxDemo, type XlsxDemoElement } from "../storybook/demoApp";
 
 type DemoMode = "sheet" | "all";
 
@@ -20,7 +20,7 @@ export class XlsxParserDemoElement extends LitElement {
 
   constructor() {
     super();
-    this.dense = true;
+    this.dense = false;
     this.styles = false;
     this.drawings = false;
     this.skipHiddenRows = true;
@@ -29,6 +29,11 @@ export class XlsxParserDemoElement extends LitElement {
 
   createRenderRoot() {
     return this;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    if (this.hasUpdated) this.mountDemo();
   }
 
   firstUpdated() {
@@ -47,12 +52,18 @@ export class XlsxParserDemoElement extends LitElement {
     }
   }
 
+  disconnectedCallback() {
+    this.querySelector<XlsxDemoElement>('.sb-demo')?.dispose();
+    super.disconnectedCallback();
+  }
+
   private mountDemo() {
     const mount = this.querySelector("[data-demo-root]");
     if (!mount) {
       return;
     }
 
+    mount.querySelector<XlsxDemoElement>('.sb-demo')?.dispose();
     mount.replaceChildren(
       createXlsxDemo({
         dense: this.dense,

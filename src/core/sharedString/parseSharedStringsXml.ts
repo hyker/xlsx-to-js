@@ -13,7 +13,7 @@ export const parseSharedStringsXml = (str: string, limits: XlsxLimits = resolveL
     stringItems.forEach(item => {
         // A shared string can contain several rich-text runs. Each <si> is one
         // indexed value; flattening every <t> shifts all subsequent indexes.
-        strings.push(getElementsByName(item, 't').filter(t => t.parentElement?.localName !== 'rPh').map(text => text.textContent ?? '').join(''));
+        strings.push(getElementsByName(item, 't').filter(t => (t.parentNode as Element | null)?.localName !== 'rPh').map(text => text.textContent ?? '').join(''));
     });
 
     return strings;
