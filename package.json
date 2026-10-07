@@ -24,6 +24,7 @@
   ],
   "scripts": {
     "build": "tsup",
+    "prepare": "npm run build",
     "dev:demo": "npm --prefix examples/vite run dev",
     "test": "npm run typecheck && npm run build && node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",

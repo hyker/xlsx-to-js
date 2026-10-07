@@ -14,6 +14,38 @@ test.beforeEach(async ({ page }) => {
 const upload = (page, name, buffer) => page.locator('[data-action="upload"]').setInputFiles({ name, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer });
 const loaded = page => expect(page.locator('[data-role="status"] strong')).toHaveText('Workbook loaded');
 
+// Let real exports finish, but hold their results until the test releases them.
+// This keeps cancellation deterministic even when CI clicks take longer than
+// a timer, and lets us exercise a stale callback after worker termination.
+const holdExportResults = page => page.evaluate(() => {
+    window.exportJobs = 0;
+    window.heldExports = [];
+    const Native = window.Worker;
+    window.Worker = class extends Native {
+        constructor(...args) {
+            super(...args);
+            this.rendering = false;
+            this.wasTerminated = false;
+            this.addEventListener('message', event => {
+                if (this.rendering && event.data.type === 'result') {
+                    event.stopImmediatePropagation();
+                    window.heldExports.push({ worker: this, event });
+                }
+            });
+        }
+        postMessage(message, ...args) {
+            if (message.type === 'render') { this.rendering = true; window.exportJobs++; }
+            super.postMessage(message, ...args);
+        }
+        terminate() { this.wasTerminated = true; super.terminate(); }
+    };
+    window.releaseExportResult = () => {
+        const { worker, event } = window.heldExports.shift();
+        worker.onmessage?.(event);
+        return worker.wasTerminated;
+    };
+});
+
 test('sample workbook renders styles and merges, then switches sheets', async ({ page }) => {
     await page.locator('[data-option="styles"]').check();
     await page.locator('[data-option="drawings"]').check();
@@ -260,23 +292,21 @@ test('static PNG and JPEG headers allow images that decode in real browsers', as
 test('full exports run in a worker and cancellation leaves preview usable', async ({ page }) => {
     await page.locator('xlsx-parser-demo').evaluate(element => { element.mode = 'all'; });
     await page.locator('[data-action="sample"]').click(); await loaded(page);
-    await page.evaluate(() => {
-        window.exportJobs = 0;
-        const Native = window.Worker;
-        window.Worker = class extends Native {
-            postMessage(message) {
-                if (message.type === 'render') window.exportJobs++;
-                setTimeout(() => super.postMessage(message), 300);
-            }
-        };
-    });
+    await holdExportResults(page);
     await page.locator('[data-action="export"]').click();
+    await expect.poll(() => page.evaluate(() => window.heldExports.length)).toBe(1);
     await expect(page.locator('[data-role="status"] strong')).toHaveText('Exporting workbook');
     await page.locator('[data-action="cancel"]').click();
+    await expect(page.locator('[data-role="status"] strong')).toHaveText('Export cancelled');
+    expect(await page.evaluate(() => window.heldExports[0].worker.wasTerminated)).toBe(true);
+    await page.evaluate(() => window.releaseExportResult());
     await expect(page.locator('[data-role="status"] strong')).toHaveText('Export cancelled');
     await expect(page.locator('.xl-cell').first()).toBeVisible();
     const downloadEvent = page.waitForEvent('download');
     await page.locator('[data-action="export"]').click();
+    await expect.poll(() => page.evaluate(() => window.heldExports.length)).toBe(1);
+    expect(await page.evaluate(() => window.heldExports[0].worker.wasTerminated)).toBe(false);
+    await page.evaluate(() => window.releaseExportResult());
     const download = await downloadEvent;
     expect(download.suggestedFilename()).toBe('workbook.html');
     const stream = await download.createReadStream(), chunks = [];
@@ -291,20 +321,14 @@ test('a new load cancels an outstanding export without a stale download', async 
     await page.locator('xlsx-parser-demo').evaluate(element => { element.mode = 'all'; });
     await page.locator('[data-action="sample"]').click(); await loaded(page);
     const downloads = []; page.on('download', download => downloads.push(download));
-    await page.evaluate(() => {
-        const Native = window.Worker;
-        window.Worker = class extends Native {
-            postMessage(message) {
-                if (message.type === 'render') setTimeout(() => super.postMessage(message), 300);
-                else super.postMessage(message);
-            }
-        };
-    });
+    await holdExportResults(page);
     await page.locator('[data-action="export"]').click();
+    await expect.poll(() => page.evaluate(() => window.heldExports.length)).toBe(1);
     await expect(page.locator('[data-role="status"] strong')).toHaveText('Exporting workbook');
     await page.locator('[data-action="sample"]').click(); await loaded(page);
-    await page.waitForTimeout(400);
-    expect(downloads).toHaveLength(0);
+    expect(await page.evaluate(() => window.heldExports[0].worker.wasTerminated)).toBe(true);
+    await page.evaluate(() => window.releaseExportResult());
     await expect(page.locator('[data-action="export"]')).toBeEnabled();
     await expect(page.locator('[data-role="status"] strong')).toHaveText('Workbook loaded');
+    expect(downloads).toHaveLength(0);
 });
