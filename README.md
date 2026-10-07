@@ -34,6 +34,7 @@ The second argument to `options` accepts the properties:
 |styles         |false      | When the opction `styles: false` is passed, parsers will skip cell styles. |
 |drawings       |false      | When the option `drawings: false` is passed, parsers will skip parsing drawings and graphical objects. |
 |skipHiddenRows |false      | When the option `skipHiddenRows: true` is passed, hidden rows will be ignored during parsing. |
+|limits         |`DEFAULT_LIMITS`| Resource budgets described below. |
 
 
 ### Render to HTML
@@ -73,6 +74,59 @@ Notes:
 - Pass `styles: true` to include cell fonts, colors, alignment, borders, and fills.
 - Pass `drawings: true` to include images, shapes, and textboxes positioned like in Excel.
 - The generated HTML includes column letters and row numbers. It also respects merged cells and most layout details.
+- Both rendering APIs use the same layout, styles, and drawings.
+- Hidden and very-hidden sheets are retained in `workbook.workSheets` with their `state`, but omitted from HTML by default. To display them deliberately, pass `{ includeHiddenSheets: true }` as the second argument to `toHTML`, or the third argument to `toHTMLSheet`. Sheet indexes always refer to the original workbook order.
+
+### Untrusted workbooks and resource limits
+
+The parser rejects malformed XML, DTD/entity declarations, invalid coordinates and indexes, duplicate cells, overlapping merges, invalid required relationships, archive traversal, duplicate archive paths, and ZIP checksum mismatches. Fonts are serialized as quoted CSS strings; alignment and colors are restricted to supported values. Neither formulas nor external relationships are executed or fetched. Embedded images are restricted to PNG, JPEG, and GIF when rendered.
+
+Budgets apply before grid allocation and during streamed decompression, including when ZIP size metadata is forged. Archive entry and declared expansion limits include unused parts. Grid, merge, and drawing budgets cover the whole workbook; render budgets also cover expansion caused by drawings. `dense: false` avoids allocating empty cells but does not bypass grid budgets.
+
+```ts
+import { XlsxParser, DEFAULT_LIMITS } from 'xlsx-to-js';
+
+const limits = {
+  ...DEFAULT_LIMITS,
+  maxFileBytes: 5 * 1024 * 1024,
+  maxCells: 100_000,
+};
+const workbook = await new XlsxParser().readFile(file, {
+  styles: true,
+  drawings: true,
+  limits,
+});
+const html = new XlsxParser().toHTML(workbook, { limits });
+```
+
+Parsing and rendering accept independent `limits` overrides. Pass your chosen budgets to both. Overrides must be positive safe integers; row and column limits cannot exceed Excel's coordinate limits. Raising budgets increases CPU and memory exposure.
+
+| Limit | Default |
+|---|---:|
+| `maxFileBytes` | 10 MiB |
+| `maxEntries` | 1,024 |
+| `maxEntryBytes` | 8 MiB |
+| `maxTotalBytes` | 32 MiB |
+| `maxSheets` | 32 |
+| `maxRows` | 10,000 |
+| `maxColumns` | 1,024 |
+| `maxCells` | 250,000 grid positions, including blanks |
+| `maxMergedCells` | 250,000 positions |
+| `maxDrawings` | 1,000 |
+| `maxDrawingPixels` | 100,000 per coordinate, offset, extent, or rectangle bound |
+| `maxXmlNodes` | 100,000 per XML part, including text nodes |
+| `maxXmlDepth` | 64 |
+| `maxHtmlLength` | 16,777,216 UTF-16 code units |
+
+This strict reader supports classic, single-volume, unencrypted ZIP archives with UTF-8/ASCII paths. ZIP64 and Unicode path-override extra fields are rejected. Unsupported required sheet types (such as chart sheets), missing worksheet relationships, and inconsistent dimensions fail explicitly rather than returning partial data.
+
+For a security-critical application, also isolate parsing in a terminable process or an execution context with a compatible XML parser, enforce application time/memory limits, and render previews in an iframe with scripts disabled and a restrictive network CSP. The library itself does not create that isolation. Browser image decoding and DOM/XML parsing still use resources outside these library budgets. Hidden sheets and rows are display metadata, never an access-control boundary. When displaying parser errors or filenames, use `textContent`.
+
+### Development and regression tests
+
+Run `npm ci` and `npm test`. The test command type-checks, builds, and runs adversarial ZIP/XML/HTML tests using Node's test runner and jsdom. Test dependencies require Node 22.22.2+, Node 24.15.0+, or Node 26+ (as supported by jsdom); these are development requirements, not browser runtime requirements.
+
+For the demo, run `npm ci --prefix examples/vite`, `npx tsc --noEmit -p examples/vite/tsconfig.json`, and `npm --prefix examples/vite run build-storybook`.
 
 **Supported Features**
 - **Cell Content:** strings, numbers, dates (basic serial-date -> locale string), formulas (stored, not evaluated).

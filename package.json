@@ -18,7 +18,8 @@
   "scripts": {
     "build": "tsup",
     "dev:demo": "npm --prefix examples/vite run dev",
-    "test": "tsc --noEmit"
+    "test": "npm run typecheck && npm run build && node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
@@ -38,16 +39,19 @@
   },
   "homepage": "https://github.com/javier-mora/xlsx-to-js#readme",
   "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.1.2",
     "ts-node": "^10.9.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },
   "overrides": {
-    "brace-expansion": "2.0.2",
+    "brace-expansion": "^2.1.7",
     "cross-spawn": "7.0.6",
     "diff": "4.0.4",
     "glob": "10.5.0",
-    "minimatch": "9.0.7"
+    "minimatch": "9.0.7",
+    "esbuild": "$esbuild"
   },
   "dependencies": {
     "jszip": "^3.10.1"

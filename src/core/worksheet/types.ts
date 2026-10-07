@@ -84,6 +84,11 @@ interface CellData {
  * A two-dimensional grid of cells that are organized into rows and columns.
  */
 export interface WorkSheet {
+    state?: 'visible' | 'hidden' | 'veryHidden';
+    /** Internal package relationship used to resolve this sheet. */
+    relationshipId?: string;
+    /** Preserve coordinates while omitting hidden rows from HTML. */
+    skipHiddenRows?: boolean;
     /** Sheet id. */
     id: number;
     /** Sheet name. */

@@ -1,3 +1,7 @@
+import { matchesName } from '../xml';
+import { parseRange, parseReference, resolveLimits } from '../security';
+import { XlsxLimits } from '../../types';
+
 function modifyHex(hex: string) {
     if (hex.length == 4) {
       hex = hex.replace('#', '');
@@ -53,115 +57,58 @@ export function getColumnIndex(column: string): number {
   return index;
 }
 
-export function getRangeArray<T>(range: string, defValue?: T): T[][] {
-  let end: string;
-  if (range.includes(':')) {
-      [, end] = range.split(':');
-  } else {
-      end = range;
-  }
-
-  const startRow = 1;
-  const startColIndex = getColumnIndex('A');
-
-  const endColumn = end.match(/[A-Z]+/)![0];
-  const endRow = parseInt(end.match(/\d+/)![0]);
-
-  const endColIndex = getColumnIndex(endColumn);
-
-  const array: T[][] = [];
-  for (let row = startRow; row <= endRow; row++) {
-      const rowArray: T[] = [];
-      for (let col = startColIndex; col <= endColIndex; col++) {
-        if (defValue) {
-          rowArray.push(defValue);
-        } else {
-          rowArray.push();
-        }
-      }
-      array.push(rowArray);
-  }
-
-  return array;
+export function getRangeArray<T>(range: string, defValue?: T, limits: XlsxLimits = resolveLimits()): T[][] {
+  const { end } = parseRange(range, limits);
+  return Array.from({ length: end.row }, () => defValue === undefined ? [] :
+    Array.from({ length: end.col }, () => typeof defValue === 'object' ? { ...defValue } : defValue));
 }
 
 export function getPositionInArray(cell: string): { row: number, col: number } {
-  const column = cell.match(/[A-Z]+/)![0];
-  const row = parseInt(cell.match(/\d+/)![0]);
-
-  const colIndex = getColumnIndex(column);
-  const rowIndex = row - 1;
-
-  return { row: rowIndex, col: colIndex - 1 };
+  const pos = parseReference(cell);
+  return { row: pos.row - 1, col: pos.col - 1 };
 }
 
-export function getElementByName(children?: Element | Document, name?: string) {
-  if (children && name) {
-    const e = [...children.getElementsByTagName(name)][0];
-    const x = [...children.getElementsByTagName(`x:${name}`)][0];
-    return e ?? x;
-  } else {
-      return undefined;
+export function getElementByName(children?: Element | Document, name?: string): Element | undefined {
+  if (!children || !name) return undefined;
+  const local = name.split(':').pop()!;
+  const elements = children.getElementsByTagNameNS('*', local);
+  for (let i = 0; i < elements.length; i++) if (matchesName(elements[i], name)) return elements[i];
+  return undefined;
+}
+
+export function getElementsByName(children?: Element | Document, name?: string): Element[] {
+  if (!children || !name) return [];
+  return Array.from(children.getElementsByTagNameNS('*', name.split(':').pop()!)).filter(e => matchesName(e, name));
+}
+
+export function getChildrenByName(parent: Element | undefined, name: string): Element[] {
+  return parent ? Array.from(parent.children).filter(child => matchesName(child, name)) : [];
+}
+
+export function getChildByName(parent: Element | undefined, name: string): Element | undefined {
+  return getChildrenByName(parent, name)[0];
+}
+
+export function getSheetDimension(sheetData: Element, limits: XlsxLimits = resolveLimits()): string {
+  let maxRow = 0, maxCol = 0;
+  for (const cell of getElementsByName(sheetData, 'c')) {
+    const { row, col } = parseReference(cell.getAttribute('r') ?? '', limits);
+    maxRow = Math.max(maxRow, row);
+    maxCol = Math.max(maxCol, col);
   }
+  if (!maxRow) return '';
+  let letters = '';
+  for (let n = maxCol; n > 0; n = Math.floor((n - 1) / 26)) letters = String.fromCharCode(65 + (n - 1) % 26) + letters;
+  return `A1:${letters}${maxRow}`;
 }
 
-export function getElementsByName(children?: Element | Document, name?: string) {
-  if (children && name) {
-    const e = [...children.getElementsByTagName(name)];
-    const x = [...children.getElementsByTagName(`x:${name}`)];
-    return ((e && e.length > 0 ? e : undefined) ?? (x && x.length > 0 ? x : undefined)) ?? [];
-  } else {
-    return [];
-  }
-}
-
-export function getSheetDimension(sheetData: Element): string {
-  const cellElements = sheetData.querySelectorAll("c[r]");
-  
-  if (cellElements.length === 0) return "";
-
-  let minRow = Number.MAX_VALUE, maxRow = Number.MIN_VALUE;
-  let minCol = Number.MAX_VALUE, maxCol = Number.MIN_VALUE;
-
-  const parseCellReference = (ref: string): { col: string, row: number } => {
-    const match = ref.match(/^([A-Z]+)(\d+)$/);
-    if (!match) throw new Error(`Invalid cell reference: ${ref}`);
-    const [_, col, row] = match;
-    return { col, row: parseInt(row, 10) };
-  };
-
-  cellElements.forEach(cell => {
-    const cellRef = cell.getAttribute("r");
-    if (cellRef) {
-      const { col, row } = parseCellReference(cellRef);
-      const colIndex = getColumnIndex(col);
-
-      minRow = Math.min(minRow, row);
-      maxRow = Math.max(maxRow, row);
-
-      minCol = Math.min(minCol, colIndex);
-      maxCol = Math.max(maxCol, colIndex);
-    }
-  });
-
-  const columnName = (index: number): string => {
-    let name = '';
-    while (index > 0) {
-      const remainder = (index - 1) % 26;
-      name = String.fromCharCode(65 + remainder) + name;
-      index = Math.floor((index - 1) / 26);
-    }
-    return name;
-  };
-
-  return `${columnName(minCol)}${minRow}:${columnName(maxCol)}${maxRow}`;
-}
-
-export function excelSerialToJSDate(serial: number): Date {
-  const excelStartDate = new Date(1900, 0, 1);
-  const jsDate = new Date(excelStartDate.getTime() + (serial - 2) * 24 * 60 * 60 * 1000);
-  
-  return jsDate;
+export function excelSerialToJSDate(serial: number, date1904 = false): Date {
+  // Serial 60 is Excel's fictional 1900-02-29; represent it as 1900-02-28.
+  const days = date1904 ? serial : serial < 60 ? serial : serial - 1;
+  const epoch = date1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, 31);
+  const result = new Date(epoch + days * 86400000);
+  if (!Number.isFinite(result.getTime())) throw new Error('Invalid date serial');
+  return result;
 }
 
 export function positionFromExt(start: { col: number; row: number }, extValue?: string | null): number {

@@ -1,6 +1,7 @@
 import { XlsxParser } from "../../../../dist/index.js";
 import { base64ToArrayBuffer, sampleWorkbookBase64 } from "./sampleWorkbook";
 import "./demo.css";
+import { setError, setStatus } from './status';
 
 type ParserOptions = {
   dense: boolean;
@@ -18,6 +19,7 @@ type StoryArgs = ParserOptions & {
 type WorkbookLike = {
   workSheets: Array<{
     name: string;
+    state?: string;
     data: unknown[];
     mergeCells: string[];
   }>;
@@ -48,10 +50,6 @@ function createOption(
 
   row.append(input, text);
   return row;
-}
-
-function setStatus(target: HTMLElement, title: string, detail: string) {
-  target.innerHTML = `<strong>${title}</strong><span>${detail}</span>`;
 }
 
 function createDownloadUrl(): string {
@@ -179,6 +177,7 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
 
     tabs.innerHTML = "";
     workbook.workSheets.forEach((sheet, index) => {
+      if (sheet.state && sheet.state !== 'visible') return;
       const tab = document.createElement("button");
       tab.type = "button";
       tab.className = `sb-demo__tab${index === currentSheetIndex ? " is-active" : ""}`;
@@ -201,7 +200,7 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
 
     try {
       currentWorkbook = (await parser.readFile(buffer, options)) as WorkbookLike;
-      currentSheetIndex = Math.min(currentSheetIndex, Math.max(currentWorkbook.workSheets.length - 1, 0));
+      currentSheetIndex = Math.max(0, currentWorkbook.workSheets.findIndex(sheet => !sheet.state || sheet.state === 'visible'));
 
       updateMeta(currentWorkbook);
       renderSheetTabs(currentWorkbook);
@@ -218,14 +217,7 @@ export function createXlsxDemo(args: StoryArgs): HTMLElement {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       setStatus(status, "Parsing failed", message);
-      canvas.innerHTML = `
-        <div class="sb-demo__empty">
-          <div>
-            <strong>The workbook could not be processed</strong>
-            <span>${message}</span>
-          </div>
-        </div>
-      `;
+      setError(canvas, message);
       tabs.innerHTML = "";
       meta.innerHTML = "";
     }

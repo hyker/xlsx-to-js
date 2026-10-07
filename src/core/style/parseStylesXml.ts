@@ -1,17 +1,20 @@
+import { parseXml } from '../xml';
+import { XlsxLimits } from '../../types';
+import { boundedNumber, resolveLimits } from '../security';
 import { Theme } from "../theme/types";
 import { getElementByName, getElementsByName } from "../utils";
 import { getColor } from "./getColor";
 import { BorderStyleSheet, StyleSheet } from "./types";
 
 
-export const parseStylesXml = (str: string, themes: Theme[]): StyleSheet => {
+export const parseStylesXml = (str: string, themes: Theme[], limits: XlsxLimits = resolveLimits()): StyleSheet => {
     const styleSheet: StyleSheet = {
         fonts: [],
         fills: [],
         borders: [],
         cells: [],
     };
-    const xmlDoc = new DOMParser().parseFromString(str, 'text/xml');
+    const xmlDoc = parseXml(str, 'styleSheet', limits);
     const styleSheetElement = getElementByName(xmlDoc, 'styleSheet');
     const fontsElement = getElementByName(styleSheetElement, 'fonts');
     const fillsElement = getElementByName(styleSheetElement, 'fills');
@@ -36,12 +39,12 @@ export const parseStylesXml = (str: string, themes: Theme[]): StyleSheet => {
             const italic = getElementByName(x, 'i');
 
             styleSheet.fonts.push({
-                size: +(sz?.getAttribute('val') ?? 0),
+                size: boundedNumber(sz?.getAttribute('val') ?? 0, 'font size', 409),
                 color: getColor(color, themes),
                 name: name?.getAttribute('val') ?? '',
-                family: +(family?.getAttribute('val') ?? 0),
-                bold: bold !== undefined && bold !== null,
-                italic: italic !== undefined && italic !== null,
+                family: boundedNumber(family?.getAttribute('val') ?? 0, 'font family', 5, 0, true),
+                bold: !!bold && !['0', 'false'].includes(bold.getAttribute('val') ?? '1'),
+                italic: !!italic && !['0', 'false'].includes(italic.getAttribute('val') ?? '1'),
             });
         })
     }
@@ -106,11 +109,11 @@ export const parseStylesXml = (str: string, themes: Theme[]): StyleSheet => {
             const vertical = alignment?.getAttribute('vertical') ?? 'bottom';
             const horizontalNorm = horizontal === 'centerContinuous' ? 'center' : (horizontal === 'distributed' ? 'justify' : horizontal);
             styleSheet.cells.push({
-                numFmtId: +(x.getAttribute('numFmtId') ?? 0),
-                fontId: +(x.getAttribute('fontId') ?? 0),
-                fillId: +(x.getAttribute('fillId') ?? 0),
-                borderId: +(x.getAttribute('borderId') ?? 0),
-                xfId: +(x.getAttribute('xfId') ?? 0),
+                numFmtId: boundedNumber(x.getAttribute('numFmtId') ?? 0, 'numFmtId', 65535, 0, true),
+                fontId: boundedNumber(x.getAttribute('fontId') ?? 0, 'fontId', styleSheet.fonts.length - 1, 0, true),
+                fillId: boundedNumber(x.getAttribute('fillId') ?? 0, 'fillId', styleSheet.fills.length - 1, 0, true),
+                borderId: boundedNumber(x.getAttribute('borderId') ?? 0, 'borderId', styleSheet.borders.length - 1, 0, true),
+                xfId: boundedNumber(x.getAttribute('xfId') ?? 0, 'xfId', 65535, 0, true),
                 applyFont: +(x.getAttribute('applyFont') ?? 0),
                 applyBorder: +(x.getAttribute('applyBorder') ?? 0),
                 applyAlignment: +(x.getAttribute('applyAlignment') ?? 0),
@@ -119,7 +122,7 @@ export const parseStylesXml = (str: string, themes: Theme[]): StyleSheet => {
                     ? {
                         horizontal: horizontalNorm,
                         vertical: vertical,
-                        wrapText: (alignment?.getAttribute('wrapText') ?? '0') === '1',
+                        wrapText: ['1', 'true'].includes(alignment?.getAttribute('wrapText') ?? '0'),
                     }
                     : undefined, 
             });

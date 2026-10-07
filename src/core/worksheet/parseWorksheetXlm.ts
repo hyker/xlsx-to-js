@@ -1,179 +1,129 @@
-import { DrawingFile } from "../drawing/types";
-import { StyleSheet } from "../style/types";
-import { excelSerialToJSDate, getElementByName, getElementsByName, getPositionInArray, getRangeArray, getSheetDimension } from "../utils";
-import { ColStyle, WorkSheet } from "./types";
+import { StyleSheet } from '../style/types';
+import { excelSerialToJSDate, getChildByName, getChildrenByName, getElementByName, getElementsByName, getRangeArray, getSheetDimension } from '../utils';
+import { WorkSheet } from './types';
+import { XlsxLimits } from '../../types';
+import { boundedNumber, parseRange, parseReference, resolveLimits } from '../security';
+import { parseXml } from '../xml';
 
-export const parseWorksheetXml = (str: string, relStr: string | undefined, styleSheet: StyleSheet, sharedStrings: string[], drawingFiles: DrawingFile[], dense: boolean, skipHiddenRows: boolean): WorkSheet => {
+export const parseWorksheetXml = (
+    str: string, styleSheet: StyleSheet, sharedStrings: string[], dense: boolean, skipHiddenRows: boolean,
+    limits: XlsxLimits = resolveLimits(), date1904 = false, stylesEnabled = true,
+): WorkSheet => {
     const worksheet: WorkSheet = {
-        id: 0,
-        name: '',
-        dimention: '',
-        data: [],
-        columnStyles: [],
-        rowStyles: [],
-        mergeCells: [],
-        drawings: [],
-        defaultColWidth: 8.43,
-        baseColWidth: 8,
-        defaultRowHeight: 15,
-        zeroHeight: false,
+        id: 0, name: '', dimention: '', data: [], columnStyles: [], rowStyles: [], mergeCells: [], drawings: [],
+        defaultColWidth: 8.43, baseColWidth: 8, defaultRowHeight: 15, zeroHeight: false, skipHiddenRows,
+        defaultFontName: styleSheet.defaultFontName, defaultFontSize: styleSheet.defaultFontSize,
     };
-    const xmlDoc = new DOMParser().parseFromString(str, 'text/xml');
-    const xmlRel = relStr ? new DOMParser().parseFromString(relStr, 'text/xml') : undefined;
-    const worksheetElement = getElementByName(xmlDoc, 'worksheet');
-    const dimensionElement = getElementByName(worksheetElement, 'dimension');
-    const sheetDataElement = getElementByName(worksheetElement, 'sheetData');
-    const mergeCellsElement = getElementByName(worksheetElement, 'mergeCells');
-    const colsElement = getElementByName(worksheetElement, 'cols');
-    const sheetFormatPrElement = getElementByName(worksheetElement, 'sheetFormatPr');
-    const drawingElement = getElementsByName(xmlRel, 'Relationship');
-    const colsArray = getElementsByName(colsElement, 'col');
-    const rowsArray = getElementsByName(sheetDataElement, 'row');
-    const mergeCellArray = getElementsByName(mergeCellsElement, 'mergeCell');
-    
-
-    if (sheetDataElement && !dimensionElement) {
-        worksheet.dimention = getSheetDimension(sheetDataElement);
+    const doc = parseXml(str, 'worksheet', limits);
+    const root = doc.documentElement;
+    const data = getChildByName(root, 'sheetData');
+    if (!data) throw new Error('Worksheet is missing sheetData');
+    const dimension = getChildByName(root, 'dimension');
+    const declared = dimension ? parseRange(dimension.getAttribute('ref') ?? '', limits) : undefined;
+    worksheet.dimention = dimension?.getAttribute('ref') ?? getSheetDimension(data, limits);
+    const format = getChildByName(root, 'sheetFormatPr');
+    const isTrue = (v: string | null): boolean => v === '1' || v === 'true';
+    if (format) {
+        for (const key of ['baseColWidth', 'defaultColWidth', 'defaultRowHeight'] as const) {
+            const value = format.getAttribute(key);
+            if (value !== null) worksheet[key] = boundedNumber(value, key, key === 'defaultRowHeight' ? 409 : 255);
+        }
+        worksheet.zeroHeight = isTrue(format.getAttribute('zeroHeight'));
     }
-
-    if (dimensionElement) {
-        worksheet.dimention = dimensionElement.getAttribute('ref') ?? '';
+    const columns = getChildrenByName(getChildByName(root, 'cols'), 'col');
+    if (columns.length > limits.maxColumns) throw new Error('Column styles exceed resource limits');
+    for (const column of columns) {
+        // Excel may style the entire column axis even when the used grid is small.
+        const min = boundedNumber(column.getAttribute('min'), 'column range', 16384, 1, true);
+        const max = boundedNumber(column.getAttribute('max'), 'column range', 16384, min, true);
+        worksheet.columnStyles.push({ min, max, width: boundedNumber(column.getAttribute('width') ?? 8.43, 'column width', 255),
+            hidden: isTrue(column.getAttribute('hidden')), collapsed: isTrue(column.getAttribute('collapsed')) });
     }
-
-    if (worksheet.dimention !== '') {
-        worksheet.data = getRangeArray(
-            worksheet.dimention,
-            dense ? { ref: '', value: '', formula: '' } : undefined
-        );
+    let maxRow = declared?.end.row ?? 0, maxCol = declared?.end.col ?? 0, mergedArea = 0;
+    const merged = new Set<number>();
+    for (const merge of getChildrenByName(getChildByName(root, 'mergeCells'), 'mergeCell')) {
+        const ref = merge.getAttribute('ref') ?? '';
+        const range = parseRange(ref, limits);
+        if ((mergedArea += range.area) > limits.maxMergedCells) throw new Error('Merged cells exceed resource limits');
+        for (let r = range.start.row; r <= range.end.row; r++) for (let c = range.start.col; c <= range.end.col; c++) {
+            const key = (r - 1) * limits.maxColumns + c - 1;
+            if (merged.has(key)) throw new Error('Overlapping merged cells');
+            merged.add(key);
+        }
+        maxRow = Math.max(maxRow, range.end.row); maxCol = Math.max(maxCol, range.end.col);
+        worksheet.mergeCells.push(ref);
     }
-
-    if (sheetFormatPrElement) {
-        const baseColWidthAttr = sheetFormatPrElement.getAttribute('baseColWidth');
-        const defaultColWidthAttr = sheetFormatPrElement.getAttribute('defaultColWidth');
-        const defaultRowHeightAttr = sheetFormatPrElement.getAttribute('defaultRowHeight');
-
-        if (baseColWidthAttr !== null) worksheet.baseColWidth = +baseColWidthAttr;
-        if (defaultColWidthAttr !== null) worksheet.defaultColWidth = +defaultColWidthAttr;
-        if (defaultRowHeightAttr !== null) worksheet.defaultRowHeight = +defaultRowHeightAttr;
-
-        worksheet.zeroHeight = sheetFormatPrElement.getAttribute('zeroHeight') === "1";
-    }
-
-    const isTrue = (value: string | null): boolean => value === '1' || value === 'true';
-
-    if (colsArray) {
-        const columnStyles: ColStyle[] = [];
-        colsArray.forEach(x => {
-            columnStyles.push({
-                min: +(x.getAttribute('min') ?? 1),
-                max: +(x.getAttribute('max') ?? 1),
-                width: +(x.getAttribute('width') ?? 1),
-                hidden: isTrue(x.getAttribute('hidden')),
-                collapsed: isTrue(x.getAttribute('collapsed')),
-            });
-        });
-        worksheet.columnStyles = columnStyles;
-    }
-
-    if (rowsArray) {
-        rowsArray.forEach(x => {
-            const index = +(x.getAttribute('r') ?? 0) - 1;
-            const hiddenProp = isTrue(x.getAttribute('hidden'));
-            const collapsedProp = isTrue(x.getAttribute('collapsed'));
-    
-    // Propagate default font info if available from stylesheet
-    try {
-        // styleSheet is in closure via parameter
-        // @ts-ignore
-        if ((styleSheet as any).defaultFontName) worksheet.defaultFontName = (styleSheet as any).defaultFontName;
-        // @ts-ignore
-        if ((styleSheet as any).defaultFontSize) worksheet.defaultFontSize = (styleSheet as any).defaultFontSize;
-    } catch {}
-
-            if (index >= 0 && (!skipHiddenRows || (!hiddenProp && !collapsedProp))) {
-                const cols = getElementsByName(x, 'c');
-                cols.forEach(y => {
-                    const r = y.getAttribute('r') ?? 'A'; // Row
-                    const s = +(y.getAttribute('s') ?? -1); // Style
-                    const t = y.getAttribute('t') ?? ''; // Type
-                    const formula = getElementByName(y, 'f')?.textContent ?? '';
-                    const value = t === 'inlineStr'
-                        ? getElementsByName(getElementByName(y, 'is'), 't').map(text => text.textContent ?? '').join('')
-                        : getElementByName(y, 'v')?.textContent ?? '';
-
-                    const pos = getPositionInArray(r);
-                    const cellStyle = s >= 0 ? styleSheet.cells[s] : undefined;
-                    const font = cellStyle ? styleSheet.fonts[cellStyle.fontId] : undefined;
-                    const fill = cellStyle ? styleSheet.fills[cellStyle.fillId] : undefined;
-
-                    worksheet.data[pos.row][pos.col] = {
-                        ref: r,
-                        value: t !== 's' 
-                            ? (
-                                (value !== '' && !isNaN(+value) && cellStyle?.numFmtId === 14)
-                                    ? excelSerialToJSDate(+value).toLocaleDateString() // Date
-                                    : value // Number
-                            ) 
-                            : sharedStrings[+value],
-                        formula: formula,
-                        style: (cellStyle && font && fill)
-                            ? {
-                                bgColor: fill.bgColor,
-                                fgColor: fill.fgColor,
-                                fontName: font.name,
-                                fontSize: font.size,
-                                fontColor: font.color,
-                                bold: font.bold,
-                                italic: font.italic,
-                                vAlign: cellStyle.alignment?.vertical ?? 'bottom',
-                                hAlign: cellStyle.alignment?.horizontal ?? '',
-                                wrapText: cellStyle.alignment?.wrapText ?? false,
-                                border: styleSheet.borders[cellStyle.borderId],
-                            }
-                            : undefined,
-                    }
-
-                    if (worksheet.data[pos.row][pos.col]?.style?.hAlign === '') {
-                        worksheet.data[pos.row][pos.col]!.style!.hAlign = isNaN(+worksheet.data[pos.row][pos.col].value) ? 'left' : 'right';
-                    }
-                });
-
-                // Row style
-                if (!skipHiddenRows || (cols.length > 0)) {
-                    worksheet.rowStyles.push({
-                        r: +(x.getAttribute('r') ?? 0),
-                        height: +(x.getAttribute('ht') ?? worksheet.defaultRowHeight),
-                        hidden: hiddenProp,
-                        collapsed: collapsedProp,
-                    });
-                }
+    const rows = getChildrenByName(data, 'row');
+    if (rows.length > limits.maxRows) throw new Error('Rows exceed resource limits');
+    const rowIds = new Set<number>(), refs = new Set<string>();
+    let previousRow = 0;
+    for (const row of rows) {
+        const rowIndex = boundedNumber(row.getAttribute('r') ?? previousRow + 1, 'row index', limits.maxRows, 1, true);
+        previousRow = rowIndex;
+        if (rowIds.has(rowIndex)) throw new Error('Duplicate worksheet row');
+        rowIds.add(rowIndex);
+        const hidden = row.hasAttribute('hidden') ? isTrue(row.getAttribute('hidden')) : worksheet.zeroHeight && !isTrue(row.getAttribute('customHeight'));
+        const collapsed = isTrue(row.getAttribute('collapsed'));
+        worksheet.rowStyles.push({ r: rowIndex, height: boundedNumber(row.getAttribute('ht') ?? worksheet.defaultRowHeight, 'row height', 409), hidden, collapsed });
+        let previousCol = 0;
+        for (const cell of getChildrenByName(row, 'c')) {
+            const ref = cell.getAttribute('r') ?? `${columnName(previousCol + 1)}${rowIndex}`;
+            const pos = parseReference(ref, limits);
+            previousCol = pos.col;
+            if (pos.row !== rowIndex) throw new Error('Cell does not belong to its row');
+            if (declared && (pos.row > declared.end.row || pos.col > declared.end.col)) throw new Error('Cell outside worksheet dimension');
+            if (refs.has(ref)) throw new Error('Duplicate cell reference');
+            refs.add(ref);
+            if (refs.size > limits.maxCells) throw new Error('Cells exceed resource limits');
+            maxRow = Math.max(maxRow, pos.row); maxCol = Math.max(maxCol, pos.col);
+            const s = cell.getAttribute('s');
+            const styleIndex = s === null ? undefined : boundedNumber(s, 'cell style index', styleSheet.cells.length - 1, 0, true);
+            const cellStyle = styleIndex === undefined ? styleSheet.cells[0] : styleSheet.cells[styleIndex];
+            const font = cellStyle && styleSheet.fonts[cellStyle.fontId];
+            const fill = cellStyle && styleSheet.fills[cellStyle.fillId];
+            const type = cell.getAttribute('t') ?? 'n';
+            if (!['n', 's', 'str', 'inlineStr', 'b', 'e', 'd'].includes(type)) throw new Error('Invalid cell type');
+            const formula = getElementByName(cell, 'f')?.textContent ?? '';
+            let value = type === 'inlineStr'
+                ? getElementsByName(getElementByName(cell, 'is'), 't').filter(t => t.parentElement?.localName !== 'rPh').map(t => t.textContent ?? '').join('')
+                : getElementByName(cell, 'v')?.textContent ?? '';
+            if (type === 's') value = sharedStrings[boundedNumber(value, 'shared string index', sharedStrings.length - 1, 0, true)];
+            else if (type === 'b' && !['0', '1', 'true', 'false'].includes(value)) throw new Error('Invalid boolean cell value');
+            else if (type === 'n' && value !== '') {
+                const number = Number(value);
+                if (!Number.isFinite(number)) throw new Error('Invalid numeric cell value');
+                if (cellStyle?.numFmtId === 14) value = excelSerialToJSDate(number, date1904).toLocaleDateString(undefined, { timeZone: 'UTC' });
             }
-        });
-
-        if (mergeCellArray) {
-            mergeCellArray.forEach(x => {
-                worksheet.mergeCells.push(x.getAttribute('ref') ?? '');
-            });
+            if (skipHiddenRows && (hidden || collapsed)) continue;
+            // Delay grid allocation until all coordinates and ranges are validated.
+            if (!worksheet.data[pos.row - 1]) worksheet.data[pos.row - 1] = [];
+            worksheet.data[pos.row - 1][pos.col - 1] = {
+                ref, value, formula,
+                style: stylesEnabled && cellStyle && font && fill ? {
+                    bgColor: fill.bgColor, fgColor: fill.patternType === 'solid' ? fill.fgColor : '',
+                    fontName: font.name, fontSize: font.size, fontColor: font.color, bold: font.bold, italic: font.italic,
+                    vAlign: cellStyle.alignment?.vertical ?? 'bottom',
+                    hAlign: cellStyle.alignment?.horizontal || (value !== '' && Number.isFinite(Number(value)) ? 'right' : 'left'),
+                    wrapText: cellStyle.alignment?.wrapText ?? false, border: styleSheet.borders[cellStyle.borderId],
+                } : undefined,
+            };
         }
     }
-
-    if (skipHiddenRows) {
-        if (worksheet.defaultRowHeight === 0 && worksheet.zeroHeight) {
-            worksheet.data = worksheet.data.filter(x => x.length > 0 && x[0] !== undefined && x.some(y => y.ref !== ''));
+    if (maxRow && maxCol) {
+        worksheet.dimention = `A1:${columnName(maxCol)}${maxRow}`;
+        parseRange(worksheet.dimention, limits);
+        const grid = getRangeArray(worksheet.dimention, dense ? { ref: '', value: '', formula: '' } : undefined, limits);
+        for (let r = 0; r < worksheet.data.length; r++) {
+            if (!worksheet.data[r]) continue;
+            for (const key of Object.keys(worksheet.data[r])) grid[r][Number(key)] = worksheet.data[r][Number(key)];
         }
+        worksheet.data = grid;
     }
-
-    const drawingRel = drawingElement.find(rel =>
-        rel.getAttribute('Type')?.includes('drawing')
-    );
-
-    if (drawingRel) {
-        const drawingTarget = drawingRel.getAttribute('Target') || '';
-        const drawingFileName = drawingTarget.split('/').pop() || '';
-
-        const drawingFile = drawingFiles.find(df => df.src === drawingFileName);
-        worksheet.drawings = drawingFile?.drawings ?? [];
-    }
-    
     return worksheet;
+};
+
+function columnName(index: number): string {
+    let result = '';
+    while (index > 0) { result = String.fromCharCode(65 + (index - 1) % 26) + result; index = Math.floor((index - 1) / 26); }
+    return result;
 }

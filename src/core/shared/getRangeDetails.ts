@@ -1,28 +1,8 @@
-import { getColumnIndex } from '../utils/utils'
+import { DEFAULT_LIMITS, parseRange } from '../security';
 
-/**
- * Gets the rows and columns spanned by a range.
- * @param range Range in *A1:B2* format.
- * @returns 
- */
-export function getRangeDetails(range: string): { origin: string, colspan: number, rowspan: number } {
-    const [start, end] = range.split(':');
-  
-    const startColumn = start.match(/[A-Z]+/)![0];
-    const startRow = parseInt(start.match(/\d+/)![0]);
-  
-    const endColumn = end.match(/[A-Z]+/)![0];
-    const endRow = parseInt(end.match(/\d+/)![0]);
-  
-    const startColIndex = getColumnIndex(startColumn);
-    const endColIndex = getColumnIndex(endColumn);
-  
-    const colspan = (endColIndex - startColIndex) + 1;
-    const rowspan = (endRow - startRow) + 1;
-  
-    return {
-        origin: start,
-        colspan: colspan,
-        rowspan: rowspan
-    };
-  }
+/** Gets the origin and spans of a validated Excel range. */
+export function getRangeDetails(range: string): { origin: string; colspan: number; rowspan: number } {
+    // This helper only computes metadata, so it can cover Excel's full axis.
+    const { start, end } = parseRange(range, { ...DEFAULT_LIMITS, maxRows: 1048576, maxColumns: 16384, maxCells: 1048576 * 16384 });
+    return { origin: range.split(':')[0], colspan: end.col - start.col + 1, rowspan: end.row - start.row + 1 };
+}

@@ -1,3 +1,4 @@
+import { boundedNumber } from '../security';
 import { Theme } from "../theme/types";
 import { argbToHex, hexToRgb, rgbToHex } from "../utils";
 
@@ -88,7 +89,7 @@ export const getColor = (e: Element | undefined, themes: Theme[]): string => {
         const themeArgb = t?.val ?? defaultColor;
 
         const rgb = hexToRgb(argbToHex(themeArgb));
-        const tint = +(e.getAttribute('tint') ?? 0);
+        const tint = boundedNumber(e.getAttribute('tint') ?? 0, 'color tint', 1, -1);
 
         if (tint !== 0) {
             if (tint < 0) {

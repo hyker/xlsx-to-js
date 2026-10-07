@@ -1,10 +1,13 @@
+import { parseXml } from '../xml';
+import { XlsxLimits } from '../../types';
+import { resolveLimits } from '../security';
 
 import { getElementByName, getElementsByName } from "../utils";
 import { Theme } from "./types";
 
-export const parseThemeXml = (str: string): Theme[] => {
+export const parseThemeXml = (str: string, limits: XlsxLimits = resolveLimits()): Theme[] => {
     const themes: Theme[] = [];
-    const xmlDoc = new DOMParser().parseFromString(str, 'text/xml');
+    const xmlDoc = parseXml(str, 'a:theme', limits);
     const themeElement = getElementByName(xmlDoc, 'a:theme');
     const themesElement = getElementByName(themeElement, 'a:themeElements');
     const clrSchemeArray = getElementsByName(themesElement, 'a:clrScheme');
