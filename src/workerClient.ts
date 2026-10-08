@@ -1,6 +1,7 @@
 import { Workbook } from './core/workbook/types';
 import { XlsxParserOptions, XlsxParseProgress, XlsxRenderOptions } from './types';
-import { assertWorkbookTextBudget, resolveLimits } from './core/security';
+import { assertWorkbookTextBudget, limitError, resolveLimits, XlsxLimitError } from './core/security';
+import { XlsxLimits } from './types';
 
 export interface XlsxWorkerOptions extends XlsxParserOptions {
     /** Wall-clock timeout, including worker startup. Default: 30 seconds. */
@@ -30,7 +31,7 @@ export class XlsxWorkerParser {
         return this.run<Workbook>('workbook', options, () => {
             const { signal, onProgress, timeoutMs, ...parserOptions } = options;
             const limits = resolveLimits(parserOptions.limits);
-            if (file.byteLength > limits.maxFileBytes) throw new Error('Archive exceeds file budget');
+            if (file.byteLength > limits.maxFileBytes) throw limitError(limits, 'maxFileBytes', 'Archive exceeds file budget');
             return { type: 'parse', file, options: { ...parserOptions, limits } };
         });
     }
@@ -40,7 +41,7 @@ export class XlsxWorkerParser {
         return this.run<string>('html', options, () => {
             const { signal, timeoutMs, ...renderOptions } = options;
             const limits = resolveLimits(renderOptions.limits);
-            if (workbook.workSheets.length > limits.maxSheets) throw new Error('Sheet count exceeds resource limits');
+            if (workbook.workSheets.length > limits.maxSheets) throw limitError(limits, 'maxSheets', 'Sheet count exceeds resource limits');
             assertWorkbookTextBudget(workbook, limits);
             return { type: 'render', workbook, options: { ...renderOptions, limits } };
         });
@@ -73,13 +74,15 @@ export class XlsxWorkerParser {
             const timer = setTimeout(() => finish(new Error('Parsing exceeded time limit')), Math.max(0, timeoutMs - (performance.now() - started)));
             signal?.addEventListener('abort', abort, { once: true });
             if (signal?.aborted) { abort(); return; }
-            worker.onmessage = (event: MessageEvent<{ type: string; workbook?: Workbook; html?: string; error?: string; progress?: XlsxParseProgress }>) => {
+            worker.onmessage = (event: MessageEvent<{ type: string; workbook?: Workbook; html?: string; error?: string; progress?: XlsxParseProgress;
+                limit?: { limit: keyof XlsxLimits; max: number; detail: string } }>) => {
                 if (settled) return;
                 if (performance.now() - started >= timeoutMs) { finish(new Error('Parsing exceeded time limit')); return; }
                 const data = event.data;
                 if (data.type === 'progress') {
                     try { onProgress?.(data.progress!); } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
                 } else if (data.type === 'result' && (resultKey === 'html' ? typeof data.html === 'string' : !!data.workbook)) finish(undefined, data[resultKey] as T);
+                else if (data.limit) finish(new XlsxLimitError(data.limit.limit, data.limit.max, data.limit.detail));
                 else finish(new Error(data.error || 'Invalid parser worker response'));
             };
             worker.onerror = event => finish(new Error(event.message || 'Parser worker failed'));

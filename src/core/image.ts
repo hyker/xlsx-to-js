@@ -1,4 +1,5 @@
 import { XlsxLimits } from '../types';
+import { limitError } from './security';
 
 export interface ImageInfo { mime: string; pixels: number }
 
@@ -19,9 +20,8 @@ export function inspectImage(data: Uint8Array | string, limits: XlsxLimits): Ima
     const dimensions = (width: number, height: number): number => {
         if (!width || !height) fail();
         const pixels = width * height;
-        if (width > limits.maxImageDimension || height > limits.maxImageDimension || pixels > limits.maxImagePixels) {
-            throw new Error('Image pixels exceed resource limits');
-        }
+        if (width > limits.maxImageDimension || height > limits.maxImageDimension) throw limitError(limits, 'maxImageDimension', `Image pixels exceed resource limits: ${width}x${height} image`);
+        if (pixels > limits.maxImagePixels) throw limitError(limits, 'maxImagePixels', `Image pixels exceed resource limits: ${width}x${height} image`);
         return pixels;
     };
     if (length > limits.maxEntryBytes) fail();
@@ -136,6 +136,6 @@ export function inspectBase64Image(base64: string, limits: XlsxLimits): ImageInf
 
 export function chargeImagePixels(pixels: number, consumed: number, limits: XlsxLimits): number {
     const total = consumed + pixels;
-    if (total > limits.maxTotalImagePixels) throw new Error('Total image pixels exceed resource limits');
+    if (total > limits.maxTotalImagePixels) throw limitError(limits, 'maxTotalImagePixels', 'Total image pixels exceed resource limits');
     return total;
 }

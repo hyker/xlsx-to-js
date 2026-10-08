@@ -323,7 +323,7 @@ for(const bad of ['Infinity','NaN','-1','1e999','1;position:fixed','999999999999
 }
 
 test('drawing count, coordinate, image relationships and expansion budgets are enforced',async()=>{
-    await assert.rejects(read({sheet:worksheetXml(undefined,'A1','<drawing r:id="drawingRel"/>'),drawing:drawingXml({row:'10000'})},{drawings:true}),/drawing row/);
+    await assert.rejects(read({sheet:worksheetXml(undefined,'A1','<drawing r:id="drawingRel"/>'),drawing:drawingXml({row:'10000'})},{drawings:true,limits:{maxRows:10000}}),/drawing row/);
     await assert.rejects(read({sheet:worksheetXml(undefined,'A1','<drawing r:id="drawingRel"/>'),drawing:drawingXml({image:true}),drawingRelationships:relationships([{id:'imageRel',kind:'image',target:'https://example.invalid/p.png',external:true}])},{drawings:true}),/External/);
     const w=await read({sheet:worksheetXml(undefined,'A1','<drawing r:id="drawingRel"/>'),drawing:drawingXml({extent:'9525000'})},{drawings:true});
     assert.throws(()=>parser.toHTML(w,{limits:{maxColumns:2}}),/expansion/);
@@ -372,7 +372,7 @@ test('workbook-wide parse grid, merge, drawing and sheet budgets are enforced',a
     await assert.rejects(read(base,{limits:{maxCells:3}}),/Workbook grid/);
     await assert.rejects(read(base,{limits:{maxSheets:1}}),/Sheet count/);
     const merged=worksheetXml('', 'A1:A2','<mergeCells><mergeCell ref="A1:A2"/></mergeCells>');
-    await assert.rejects(read({...base,sheet:merged,extra:[['xl/worksheets/sheet2.xml',merged]]},{limits:{maxMergedCells:3}}),/Workbook grid/);
+    await assert.rejects(read({...base,sheet:merged,extra:[['xl/worksheets/sheet2.xml',merged]]},{limits:{maxMergedCells:3}}),e=>e.name==='XlsxLimitError'&&e.limit==='maxMergedCells'&&/Workbook merged cells/.test(e.message));
     const drawn=worksheetXml('<row r="1"><c r="A1"><v>42</v></c></row>','A1','<drawing r:id="drawingRel"/>');
     await assert.rejects(read({...base,sheet:drawn,drawing:drawingXml(),extra:[['xl/worksheets/sheet2.xml',drawn],['xl/worksheets/_rels/sheet2.xml.rels',relationships([{id:'drawingRel',kind:'drawing',target:'../drawings/drawing1.xml'}])]]},{drawings:true,limits:{maxDrawings:1}}),/Workbook drawings/);
 });

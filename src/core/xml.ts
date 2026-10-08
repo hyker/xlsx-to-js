@@ -1,5 +1,5 @@
 import { XlsxLimits } from '../types';
-import { resolveLimits } from './security';
+import { limitError, resolveLimits } from './security';
 
 const NS: Record<string, readonly string[]> = {
     s: ['http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'http://purl.oclc.org/ooxml/spreadsheetml/main'],
@@ -16,9 +16,9 @@ export function matchesName(element: Element, name: string): boolean {
 }
 
 export function parseXml(str: string, rootName: string, limits: XlsxLimits = resolveLimits()): Document {
-    if (str.length > limits.maxEntryBytes) throw new Error('XML exceeds entry budget');
+    if (str.length > limits.maxEntryBytes) throw limitError(limits, 'maxEntryBytes', 'XML exceeds entry budget');
     if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(str)) throw new Error('DTD and entity declarations are prohibited');
-    preflightXml(str, limits);
+    preflightXml(str, limits, rootName);
     const doc = new DOMParser().parseFromString(str, 'text/xml');
     if (!doc.documentElement || doc.getElementsByTagNameNS('*', 'parsererror').length || !matchesName(doc.documentElement, rootName)) {
         throw new Error(`Invalid ${rootName} XML`);
@@ -27,7 +27,8 @@ export function parseXml(str: string, rootName: string, limits: XlsxLimits = res
     let nodes = 0;
     while (stack.length) {
         const { node, depth } = stack.pop()!;
-        if (++nodes > limits.maxXmlNodes || depth > limits.maxXmlDepth) throw new Error('XML complexity exceeds resource limits');
+        if (++nodes > limits.maxXmlNodes) throw limitError(limits, 'maxXmlNodes', `XML complexity exceeds resource limits: ${rootName} part has too many XML nodes`);
+        if (depth > limits.maxXmlDepth) throw limitError(limits, 'maxXmlDepth', `XML complexity exceeds resource limits: ${rootName} part is nested too deeply`);
         for (let child = node.firstChild; child; child = child.nextSibling) stack.push({ node: child, depth: depth + 1 });
     }
     return doc;
@@ -37,10 +38,11 @@ export function parseXml(str: string, rootName: string, limits: XlsxLimits = res
  * Quoted attributes, comments, CDATA and PIs are skipped as indivisible regions;
  * the real XML parser remains responsible for well-formedness and namespaces.
  */
-function preflightXml(xml: string, limits: XlsxLimits): void {
+function preflightXml(xml: string, limits: XlsxLimits, rootName: string): void {
     let nodes = 0, depth = 0, attributes = 0, i = 0;
     const node = (atDepth: number) => {
-        if (++nodes > limits.maxXmlNodes || atDepth > limits.maxXmlDepth) throw new Error('XML complexity exceeds resource limits');
+        if (++nodes > limits.maxXmlNodes) throw limitError(limits, 'maxXmlNodes', `XML complexity exceeds resource limits: ${rootName} part has too many XML nodes`);
+        if (atDepth > limits.maxXmlDepth) throw limitError(limits, 'maxXmlDepth', `XML complexity exceeds resource limits: ${rootName} part is nested too deeply`);
     };
     const region = (end: string, start: number) => {
         const close = xml.indexOf(end, start);
@@ -72,9 +74,8 @@ function preflightXml(xml: string, limits: XlsxLimits): void {
             while (i < xml.length && xml[i] !== '>') {
                 const ch = xml[i++];
                 if (ch === '=') {
-                    if (++attributes > limits.maxXmlAttributes || ++perElement > limits.maxXmlAttributesPerElement) {
-                        throw new Error('XML attribute complexity exceeds resource limits');
-                    }
+                    if (++attributes > limits.maxXmlAttributes) throw limitError(limits, 'maxXmlAttributes', `XML attribute complexity exceeds resource limits: ${rootName} part has too many attributes`);
+                    if (++perElement > limits.maxXmlAttributesPerElement) throw limitError(limits, 'maxXmlAttributesPerElement', `XML attribute complexity exceeds resource limits: an element in the ${rootName} part has too many attributes`);
                 } else if (ch === '"' || ch === "'") {
                     i = region(ch, i);
                 } else if (ch === '<') throw new Error('Invalid XML tag');

@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { XlsxLimits } from '../types';
 import { getChildrenByName } from './utils';
 import { parseXml } from './xml';
+import { limitError } from './security';
 
 interface Entry { size: number; crc: number }
 interface ChunkStream {
@@ -21,7 +22,7 @@ function validPath(path: string): boolean {
  * ZIP64, encrypted archives and multi-volume archives are deliberately unsupported.
  */
 function inspectZip(file: ArrayBuffer, limits: XlsxLimits): Map<string, Entry> {
-    if (file.byteLength > limits.maxFileBytes) throw new Error('Archive exceeds file budget');
+    if (file.byteLength > limits.maxFileBytes) throw limitError(limits, 'maxFileBytes', 'Archive exceeds file budget');
     const view = new DataView(file);
     let eocd = -1;
     for (let p = file.byteLength - 22; p >= Math.max(0, file.byteLength - 65557); p--) {
@@ -35,7 +36,7 @@ function inspectZip(file: ArrayBuffer, limits: XlsxLimits): Map<string, Entry> {
         view.getUint16(eocd + 8, true) !== count || count === 0xffff || length === 0xffffffff || offset === 0xffffffff) {
         throw new Error('Unsupported ZIP64 or multi-volume archive');
     }
-    if (count > limits.maxEntries) throw new Error('Archive entry count exceeds resource limits');
+    if (count > limits.maxEntries) throw limitError(limits, 'maxEntries', 'Archive entry count exceeds resource limits');
     if (offset + length !== eocd) throw new Error('Invalid ZIP directory bounds');
     const entries = new Map<string, Entry>();
     const names = new Set<string>();
@@ -61,7 +62,8 @@ function inspectZip(file: ArrayBuffer, limits: XlsxLimits): Map<string, Entry> {
             view.getUint16(local + 6, true) !== flags || view.getUint16(local + 8, true) !== method) throw new Error('Inconsistent ZIP entry');
         const localName = new Uint8Array(file, local + 30, localNameLen);
         if (rawName.some((byte, j) => byte !== localName[j])) throw new Error('Inconsistent ZIP entry name');
-        if (size > limits.maxEntryBytes || (total += size) > limits.maxTotalBytes) throw new Error('Archive expansion exceeds resource limits');
+        if (size > limits.maxEntryBytes) throw limitError(limits, 'maxEntryBytes', `Archive expansion exceeds resource limits: ${name} expands to ${size} bytes`);
+        if ((total += size) > limits.maxTotalBytes) throw limitError(limits, 'maxTotalBytes', 'Archive expansion exceeds resource limits');
         // Unicode path overrides can change the name JSZip sees. Reject overrides
         // rather than allowing directory validation to be bypassed.
         for (let q = p + 46 + nameLen; q < p + 46 + nameLen + extraLen;) {
@@ -110,9 +112,10 @@ export class Archive {
                 if (settled) return;
                 size += chunk.byteLength;
                 this.consumed += chunk.byteLength;
-                if (size > entry.size || size > this.limits.maxEntryBytes || this.consumed > this.limits.maxTotalBytes) {
-                    fail(new Error('Decompressed data exceeds resource limits')); return;
-                }
+                // Exceeding the declared size means forged ZIP metadata, not a budget choice.
+                if (size > entry.size) { fail(new Error('Decompressed data exceeds declared ZIP size')); return; }
+                if (size > this.limits.maxEntryBytes) { fail(limitError(this.limits, 'maxEntryBytes', 'Decompressed data exceeds resource limits')); return; }
+                if (this.consumed > this.limits.maxTotalBytes) { fail(limitError(this.limits, 'maxTotalBytes', 'Decompressed data exceeds resource limits')); return; }
                 for (const byte of chunk) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8);
                 chunks.push(chunk);
             }).on('error', fail).on('end', () => {

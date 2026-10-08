@@ -13,3 +13,7 @@ debug-storybook.log
 storybook-static
 /test-results/
 /playwright-report/
+
+# Packed tarballs from `npm run pack:vendor`
+/vendor/
+*.tgz

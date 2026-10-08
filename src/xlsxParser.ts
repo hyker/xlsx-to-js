@@ -7,7 +7,7 @@ import { parseWorksheetXml } from './core/worksheet';
 import { Drawing, MediaFile } from './core/drawing/types';
 import { parseDrawingXml } from './core/drawing';
 import { Archive, readRelationships, Relationship, relationshipType, toBase64 } from './core/archive';
-import { assertWorkbookTextBudget, parseRange, resolveLimits } from './core/security';
+import { assertWorkbookTextBudget, limitError, parseRange, resolveLimits } from './core/security';
 import { renderWorkbook, renderSheetPage } from './core/render';
 import { chargeImagePixels, inspectImage } from './core/image';
 
@@ -31,6 +31,7 @@ export class XlsxParser {
         const checkAbort = () => { if (options.signal?.aborted) throw new DOMException('Parsing cancelled', 'AbortError'); };
         checkAbort();
         const limits = resolveLimits(options.limits);
+        if (options.locale !== undefined) Intl.getCanonicalLocales(options.locale);
         options.onProgress?.({ phase: 'archive', completedSheets: 0, totalSheets: 0 });
         checkAbort();
         const archive = await Archive.open(file, limits);
@@ -70,13 +71,14 @@ export class XlsxParser {
             const xml = await archive.text(rel.target);
             checkAbort();
             const parsed = parseWorksheetXml(xml, style, sharedStrings, options.dense ?? false, options.skipHiddenRows ?? false, limits, workbook.date1904, options.styles ?? false,
-                { cells: limits.maxCells - cells, merges: limits.maxMergedCells - merges });
+                { cells: limits.maxCells - cells, merges: limits.maxMergedCells - merges }, options.locale);
             if (parsed.dimention) {
                 const { end } = parseRange(parsed.dimention, limits);
                 cells += end.row * end.col;
             }
             for (const range of parsed.mergeCells) merges += parseRange(range, limits).area;
-            if (cells > limits.maxCells || merges > limits.maxMergedCells) throw new Error('Workbook grid exceeds resource limits');
+            if (cells > limits.maxCells) throw limitError(limits, 'maxCells', `Workbook grid exceeds resource limits at sheet "${sheet.name}"`);
+            if (merges > limits.maxMergedCells) throw limitError(limits, 'maxMergedCells', `Workbook merged cells exceed resource limits at sheet "${sheet.name}"`);
             Object.assign(sheet, parsed, { id: sheet.id, name: sheet.name, state: sheet.state, relationshipId: sheet.relationshipId });
             if (!options.drawings) continue;
             if (parsed.drawingRelationshipId === undefined) continue;
@@ -104,7 +106,7 @@ export class XlsxParser {
                 drawingCache.set(drawingRel.target, drawings);
             }
             drawingCount += drawings.length;
-            if (drawingCount > limits.maxDrawings) throw new Error('Workbook drawings exceed resource limits');
+            if (drawingCount > limits.maxDrawings) throw limitError(limits, 'maxDrawings', 'Workbook drawings exceed resource limits');
             for (const drawing of drawings) if (drawing.type === 'image') {
                 totalImagePixels = chargeImagePixels(imagePixels.get(drawing.base64)!, totalImagePixels, limits);
             }

@@ -2,6 +2,7 @@ import { DOMParser as XmlDOMParser } from '@xmldom/xmldom';
 import { XlsxParser } from './xlsxParser';
 import { XlsxParserOptions, XlsxRenderOptions } from './types';
 import { Workbook } from './core/workbook/types';
+import { XlsxLimitError } from './core/security';
 
 // xmldom can recover from malformed XML. Escalate every diagnostic so the worker
 // preserves the strict rejection semantics of native DOMParser.
@@ -33,6 +34,7 @@ scope.onmessage = async event => {
         });
         scope.postMessage({ type: 'result', workbook });
     } catch (error) {
-        scope.postMessage({ type: 'error', error: error instanceof Error ? error.message : String(error) });
+        const limit = error instanceof XlsxLimitError ? { limit: error.limit, max: error.max, detail: error.detail } : undefined;
+        scope.postMessage({ type: 'error', error: error instanceof Error ? error.message : String(error), limit });
     }
 };

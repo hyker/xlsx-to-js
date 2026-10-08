@@ -1,6 +1,6 @@
 import { relationshipId, parseXml } from '../xml';
 import { XlsxLimits } from '../../types';
-import { boundedNumber, resolveLimits } from '../security';
+import { boundedNumber, limitError, resolveLimits } from '../security';
 import { getChildByName, getChildrenByName } from "../utils";
 import { Workbook } from "./types";
 
@@ -16,7 +16,7 @@ export const parseWorkbookXml = (str: string, limits: XlsxLimits = resolveLimits
     if (!sheetsArray.length) throw new Error('Workbook has no worksheets');
 
     workbook.date1904 = ['1', 'true'].includes(getChildByName(workbookElement, 'workbookPr')?.getAttribute('date1904') ?? '0');
-    if (sheetsArray.length > limits.maxSheets) throw new Error('Sheet count exceeds resource limits');
+    if (sheetsArray.length > limits.maxSheets) throw limitError(limits, 'maxSheets', `Sheet count exceeds resource limits: workbook has ${sheetsArray.length} sheets`);
     const ids = new Set<string>();
     const sheetIds = new Set<number>();
     if (sheetsArray) {

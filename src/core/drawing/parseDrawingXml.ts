@@ -1,6 +1,6 @@
 import { parseXml } from '../xml';
 import { XlsxLimits } from '../../types';
-import { boundedNumber, resolveLimits, safeColor } from '../security';
+import { boundedNumber, limitError, resolveLimits, safeColor } from '../security';
 import { Relationship, relationshipType } from '../archive';
 import { argbToHex, getElementByName, getElementsByName, hexToRgb, rgbToHex } from "../utils";
 import { Drawing, DrawingObjectType, DrawingPosition, MediaFile } from "./types";
@@ -15,7 +15,7 @@ export const parseDrawingXml = (drawingStr: string, rels: Map<string, Relationsh
         ...getElementsByName(drawingElement, 'xdr:oneCellAnchor'),
         ...getElementsByName(drawingElement, 'xdr:absoluteAnchor'),
     ];
-    if (drawingsArray.length > limits.maxDrawings) throw new Error('Drawing count exceeds resource limits');
+    if (drawingsArray.length > limits.maxDrawings) throw limitError(limits, 'maxDrawings', 'Drawing count exceeds resource limits');
     const emu = (value: string | null | undefined) => boundedNumber(value ?? '0', 'drawing geometry', limits.maxDrawingPixels * 9525, 0, true);
 
     if (drawingsArray) {

@@ -1,7 +1,7 @@
 // Killable checks use the exact XML implementation bundled in browser workers.
 import assert from 'node:assert/strict';
 import { fixture, worksheetXml, stylesXml } from './fixtures.mjs';
-import { XlsxParser, PREVIEW_LIMITS } from '../dist/index.js';
+import { XlsxParser, PREVIEW_LIMITS, DEFAULT_LIMITS } from '../dist/index.js';
 await import('../dist/worker.js');
 const parser = new XlsxParser(), mode = process.argv[2];
 if (mode === 'nodes') {
@@ -23,4 +23,17 @@ if (mode === 'nodes') {
     const page = parser.toHTMLSheetPage(cloned, 0, { limits: PREVIEW_LIMITS });
     assert.ok(page.html.length < 500000);
     console.log(JSON.stringify({ parseClonePreviewMs: performance.now() - start, peakRssBytes: process.resourceUsage().maxRSS * 1024 }));
+} else if (mode === 'phone-budget') {
+    // A full default-budget grid must parse and clone within the documented phone heap.
+    const letters = n => { let result = ''; for (; n; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result; };
+    const data = Array.from({ length: 10000 }, (_, r) => `<row r="${r + 1}">${Array.from({ length: 10 }, (_, c) => `<c r="${letters(c + 1)}${r + 1}" s="0"><v>${r * 10 + c}.5</v></c>`).join('')}</row>`).join('');
+    const bytes = await fixture({ sheet: worksheetXml(data, 'A1:J10000') });
+    const workbook = await parser.readFile(bytes, { styles: true, limits: DEFAULT_LIMITS });
+    assert.equal(structuredClone(workbook).workSheets[0].data[9999][9].value, '99999.5');
+} else if (mode === 'limit-error') {
+    // The worker entry must post enough detail for the client to rebuild XlsxLimitError.
+    const posted = [];
+    globalThis.postMessage = message => posted.push(message);
+    await globalThis.onmessage({ data: { type: 'parse', file: await fixture(), options: { limits: { maxCells: 1, maxXmlNodes: 3 } } } });
+    console.log(JSON.stringify(posted.at(-1)));
 } else throw new Error('Unknown resource test mode');

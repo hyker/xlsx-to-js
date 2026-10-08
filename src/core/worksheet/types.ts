@@ -72,8 +72,10 @@ interface CellStyle {
 interface CellData {
     /** Cell reference. */
     ref: string;
-    /** Cell value. */
+    /** Display value. Numbers use the cell's number format when it is supported. */
     value: string;
+    /** Stored value, present only when number formatting changed `value`. */
+    raw?: string;
     /** Cell formula. */
     formula: string;
     /** Defines styles applied to the cell. */

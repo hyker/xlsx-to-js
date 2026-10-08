@@ -1,14 +1,15 @@
 import { StyleSheet } from '../style/types';
-import { excelSerialToJSDate, getChildByName, getChildrenByName, getElementByName, getElementsByName } from '../utils';
+import { getChildByName, getChildrenByName, getElementByName, getElementsByName } from '../utils';
 import { WorkSheet } from './types';
 import { XlsxLimits } from '../../types';
-import { boundedNumber, parseRange, parseReference, resolveLimits } from '../security';
+import { boundedNumber, limitError, parseRange, parseReference, resolveLimits } from '../security';
 import { parseXml, relationshipId } from '../xml';
+import { compileNumberFormat, NumberFormatter } from '../numberFormat';
 
 export const parseWorksheetXml = (
     str: string, styleSheet: StyleSheet, sharedStrings: string[], dense: boolean, skipHiddenRows: boolean,
     limits: XlsxLimits = resolveLimits(), date1904 = false, stylesEnabled = true,
-    remaining = { cells: limits.maxCells, merges: limits.maxMergedCells },
+    remaining = { cells: limits.maxCells, merges: limits.maxMergedCells }, locale?: string,
 ): WorkSheet => {
     const worksheet: WorkSheet = {
         id: 0, name: '', dimention: '', data: [], columnStyles: [], rowStyles: [], mergeCells: [], drawings: [],
@@ -24,7 +25,7 @@ export const parseWorksheetXml = (
     const dimension = getChildByName(root, 'dimension');
     const declared = dimension ? parseRange(dimension.getAttribute('ref') ?? '', limits) : undefined;
     const checkGrid = (row: number, col: number) => {
-        if (row * col > remaining.cells) throw new Error('Workbook grid exceeds resource limits');
+        if (row * col > remaining.cells) throw limitError(limits, 'maxCells', `Workbook grid exceeds resource limits: sheet grid reaches ${columnName(col)}${row}`);
     };
     if (declared) checkGrid(declared.end.row, declared.end.col);
     worksheet.dimention = dimension?.getAttribute('ref') ?? '';
@@ -38,7 +39,7 @@ export const parseWorksheetXml = (
         worksheet.zeroHeight = isTrue(format.getAttribute('zeroHeight'));
     }
     const columns = getChildrenByName(getChildByName(root, 'cols'), 'col');
-    if (columns.length > limits.maxColumns) throw new Error('Column styles exceed resource limits');
+    if (columns.length > limits.maxColumns) throw limitError(limits, 'maxColumns', 'Column styles exceed resource limits');
     for (const column of columns) {
         // Excel may style the entire column axis even when the used grid is small.
         const min = boundedNumber(column.getAttribute('min'), 'column range', 16384, 1, true);
@@ -51,8 +52,8 @@ export const parseWorksheetXml = (
     for (const merge of getChildrenByName(getChildByName(root, 'mergeCells'), 'mergeCell')) {
         const ref = merge.getAttribute('ref') ?? '';
         const range = parseRange(ref, limits);
-        if ((mergedArea += range.area) > limits.maxMergedCells) throw new Error('Merged cells exceed resource limits');
-        if (mergedArea > remaining.merges) throw new Error('Workbook grid exceeds resource limits');
+        if ((mergedArea += range.area) > limits.maxMergedCells) throw limitError(limits, 'maxMergedCells', 'Merged cells exceed resource limits');
+        if (mergedArea > remaining.merges) throw limitError(limits, 'maxMergedCells', 'Workbook merged cells exceed resource limits');
         for (let r = range.start.row; r <= range.end.row; r++) for (let c = range.start.col; c <= range.end.col; c++) {
             const key = (r - 1) * limits.maxColumns + c - 1;
             if (merged.has(key)) throw new Error('Overlapping merged cells');
@@ -63,10 +64,12 @@ export const parseWorksheetXml = (
         worksheet.mergeCells.push(ref);
     }
     const rows = getChildrenByName(data, 'row');
-    if (rows.length > limits.maxRows) throw new Error('Rows exceed resource limits');
+    if (rows.length > limits.maxRows) throw limitError(limits, 'maxRows', 'Rows exceed resource limits');
     const rowIds = new Set<number>(), refs = new Set<string>();
     const resolvedStyles = new Map<string, NonNullable<WorkSheet['data'][number][number]['style']>>();
-    let dateFormatter: Intl.DateTimeFormat | undefined;
+    const formatters = new Map<number, NumberFormatter | undefined>();
+    // Formatted text is allocated per cell, unlike shared strings, so charge it as it grows.
+    let formattedLength = 0;
     let previousRow = 0;
     for (const row of rows) {
         const rowIndex = boundedNumber(row.getAttribute('r') ?? previousRow + 1, 'row index', limits.maxRows, 1, true);
@@ -85,7 +88,7 @@ export const parseWorksheetXml = (
             if (declared && (pos.row > declared.end.row || pos.col > declared.end.col)) throw new Error('Cell outside worksheet dimension');
             if (refs.has(ref)) throw new Error('Duplicate cell reference');
             refs.add(ref);
-            if (refs.size > limits.maxCells) throw new Error('Cells exceed resource limits');
+            if (refs.size > limits.maxCells) throw limitError(limits, 'maxCells', 'Cells exceed resource limits');
             maxRow = Math.max(maxRow, pos.row); maxCol = Math.max(maxCol, pos.col);
             checkGrid(maxRow, maxCol);
             const s = cell.getAttribute('s');
@@ -101,16 +104,23 @@ export const parseWorksheetXml = (
                 : getElementByName(cell, 'v')?.textContent ?? '';
             if (type === 's') value = sharedStrings[boundedNumber(value, 'shared string index', sharedStrings.length - 1, 0, true)];
             else if (type === 'b' && !['0', '1', 'true', 'false'].includes(value)) throw new Error('Invalid boolean cell value');
-            else if (type === 'n' && value !== '') {
+            let raw: string | undefined;
+            if (type === 'n' && value !== '') {
                 const number = Number(value);
                 if (!Number.isFinite(number)) throw new Error('Invalid numeric cell value');
-                if (cellStyle?.numFmtId === 14) {
-                    dateFormatter ??= new Intl.DateTimeFormat(undefined, { timeZone: 'UTC', year: 'numeric', month: 'numeric', day: 'numeric' });
-                    value = dateFormatter.format(excelSerialToJSDate(number, date1904));
+                const id = cellStyle?.numFmtId ?? 0;
+                if (id !== 0 && !(skipHiddenRows && hidden)) {
+                    if (!formatters.has(id)) formatters.set(id, compileNumberFormat(id, styleSheet.numFmts?.get(id), date1904, locale));
+                    const text = formatters.get(id)?.(number);
+                    if (text !== undefined && text !== value) {
+                        if ((formattedLength += text.length) > limits.maxWorkbookTextLength) throw limitError(limits, 'maxWorkbookTextLength', 'Formatted cell text exceeds resource limits');
+                        raw = value; value = text;
+                    }
                 }
             }
             if (skipHiddenRows && hidden) continue;
-            const hAlign = cellStyle?.alignment?.horizontal || (value !== '' && Number.isFinite(Number(value)) ? 'right' : 'left');
+            // Like Excel, numbers and dates align right; text, booleans and errors align left.
+            const hAlign = cellStyle?.alignment?.horizontal || (type === 'n' && (raw ?? value) !== '' ? 'right' : 'left');
             const styleKey = `${styleIndex ?? 0}:${hAlign}`;
             let resolvedStyle = resolvedStyles.get(styleKey);
             if (stylesEnabled && cellStyle && font && fill && !resolvedStyle) {
@@ -128,6 +138,7 @@ export const parseWorksheetXml = (
                 ref, value, formula,
                 style: stylesEnabled ? resolvedStyle : undefined,
             };
+            if (raw !== undefined) worksheet.data[pos.row - 1][pos.col - 1].raw = raw;
         }
     }
     if (maxRow && maxCol) {

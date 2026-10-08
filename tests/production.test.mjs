@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { JSDOM } from 'jsdom';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { XlsxParser, XlsxWorkerParser, PREVIEW_LIMITS } from '../dist/index.js';
+import { XlsxParser, XlsxWorkerParser, XlsxLimitError, DEFAULT_LIMITS, PREVIEW_LIMITS } from '../dist/index.js';
 import { fixture, worksheetXml, stylesXml, drawingXml } from './fixtures.mjs';
 const dom = new JSDOM('<main></main>');
 if (process.env.XLSX_XML_PARSER === 'xmldom') await import('../dist/worker.js');
@@ -13,8 +13,9 @@ const read = async (sheet, options = {}, extra = {}) => parser.readFile(await fi
 const inspect = html => { const main = dom.window.document.querySelector('main'); main.innerHTML = html; return main; };
 
 test('sparse 250,000-position preview is bounded and preserves last-page coordinates', async () => {
-    const w = await read(worksheetXml('<row r="10000"><c r="Y10000"><v>42</v></c></row>', 'A1:Y10000'));
-    const p = parser.toHTMLSheetPage(w, 0, { rowPage: 99 });
+    const limits = { maxCells: 250_000 };
+    const w = await read(worksheetXml('<row r="10000"><c r="Y10000"><v>42</v></c></row>', 'A1:Y10000'), { limits });
+    const p = parser.toHTMLSheetPage(w, 0, { rowPage: 99, limits });
     assert.equal(p.totalRows, 10000); assert.equal(p.totalColumns, 25);
     assert.equal(p.totalRowPages, 100); assert.equal(p.rowStart, 9901);
     const root = inspect(p.html);
@@ -204,4 +205,73 @@ test('worker timeout values cannot wrap the platform timer and abort during crea
     const result = new XlsxWorkerParser(() => { controller.abort(); return worker; }).readFile(new ArrayBuffer(1), { signal: controller.signal });
     await assert.rejects(result, { name: 'AbortError' });
     assert.equal(worker.terminated, true);
+});
+
+const columnLetters = n => { let result = ''; for (; n; n = Math.floor((n - 1) / 26)) result = String.fromCharCode(65 + (n - 1) % 26) + result; return result; };
+const gridXml = (rows, cols, cell = (r, c) => `<v>${r * c}</v>`) => worksheetXml(Array.from({ length: rows }, (_, r) =>
+    `<row r="${r + 1}">${Array.from({ length: cols }, (_, c) => `<c r="${columnLetters(c + 1)}${r + 1}" s="0">${cell(r + 1, c + 1)}</c>`).join('')}</row>`).join(''),
+    `A1:${columnLetters(cols)}${rows}`);
+
+test('numeric attribute validation stays linear for long digit runs', async () => {
+    for (const ht of ['1'.repeat(200_000) + 'x', '1'.repeat(65)]) {
+        const start = performance.now();
+        await assert.rejects(read(worksheetXml(`<row r="1" ht="${ht}"><c r="A1"><v>1</v></c></row>`)), /Invalid row height/);
+        assert.ok(performance.now() - start < 1000, `validation took ${performance.now() - start} ms`);
+    }
+    for (const ht of ['15', '15.75', '.5', '1e2', '20.']) {
+        const w = await read(worksheetXml(`<row r="1" ht="${ht}"><c r="A1"><v>1</v></c></row>`));
+        assert.equal(w.workSheets[0].rowStyles[0].height, Number(ht));
+    }
+});
+
+test('default limits accept ordinary sheets up to the cell budget', async () => {
+    // Tall and wide shapes that were rejected by the former node and row caps.
+    for (const [rows, cols] of [[5000, 8], [20000, 5], [10000, 10]]) {
+        const w = await read(gridXml(rows, cols), { limits: DEFAULT_LIMITS });
+        assert.equal(w.workSheets[0].data.length, rows);
+    }
+    await assert.rejects(read(gridXml(10001, 10), { limits: DEFAULT_LIMITS }),
+        e => e instanceof XlsxLimitError && e.limit === 'maxCells' && e.max === DEFAULT_LIMITS.maxCells);
+    assert.deepEqual({ ...PREVIEW_LIMITS, maxHtmlLength: DEFAULT_LIMITS.maxHtmlLength }, { ...DEFAULT_LIMITS });
+});
+
+test('limit errors name the exceeded budget and its configured value', async () => {
+    const cases = [
+        [{ maxXmlNodes: 3 }, 'maxXmlNodes', /workbook part has too many XML nodes/],
+        [{ maxXmlDepth: 2 }, 'maxXmlDepth', /nested too deeply/],
+        [{ maxXmlAttributesPerElement: 1 }, 'maxXmlAttributesPerElement', /element/],
+        [{ maxRows: 1 }, 'maxRows', /B2 is beyond the row limit/],
+        [{ maxColumns: 1 }, 'maxColumns', /B2 is beyond the column limit/],
+        [{ maxCells: 3 }, 'maxCells', /grid/],
+        [{ maxFileBytes: 10 }, 'maxFileBytes', /file budget/],
+    ];
+    for (const [limits, limit, detail] of cases) {
+        await assert.rejects(read(worksheetXml('<row r="2"><c r="B2" s="0"><v>1</v></c></row>', 'A1:B2'), { limits }), error => {
+            assert.ok(error instanceof XlsxLimitError, `${limit}: ${error}`);
+            assert.equal(error.name, 'XlsxLimitError');
+            assert.equal(error.limit, limit); assert.equal(error.max, limits[limit]);
+            assert.match(error.message, detail); assert.match(error.message, new RegExp(`limit ${limit} = ${limits[limit]}`));
+            return true;
+        });
+    }
+    const w = await read(gridXml(2, 2));
+    assert.throws(() => parser.toHTML(w, { limits: { maxHtmlLength: 100 } }), { name: 'XlsxLimitError', limit: 'maxHtmlLength' });
+});
+
+test('limit errors survive the worker boundary as XlsxLimitError', async () => {
+    const child = spawnSync(process.execPath, [fileURLToPath(new URL('./worker-resource-child.mjs', import.meta.url)), 'limit-error'], { timeout: 5000, encoding: 'utf8' });
+    assert.equal(child.status, 0, child.stderr);
+    const posted = JSON.parse(child.stdout.trim());
+    assert.equal(posted.type, 'error'); assert.equal(posted.limit.limit, 'maxXmlNodes'); assert.equal(posted.limit.max, 3);
+    const worker = { postMessage() {}, terminate() {} };
+    const result = new XlsxWorkerParser(() => worker).readFile(new ArrayBuffer(1));
+    worker.onmessage({ data: posted });
+    await assert.rejects(result, error => error instanceof XlsxLimitError && error.limit === 'maxXmlNodes' && error.max === 3 && error.message === posted.error);
+});
+
+test('a full default-budget grid parses within a 352 MiB heap', () => {
+    // Measured minimum is ~300 MiB for the parse itself; the margin covers fixture generation.
+    const child = spawnSync(process.execPath, ['--max-old-space-size=352', fileURLToPath(new URL('./worker-resource-child.mjs', import.meta.url)), 'phone-budget'], { timeout: 30000, encoding: 'utf8' });
+    assert.equal(child.error, undefined, child.error?.message);
+    assert.equal(child.status, 0, child.stderr);
 });

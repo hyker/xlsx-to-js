@@ -12,6 +12,9 @@ export interface XlsxParserOptions {
     drawings?: boolean;
     /** When `true`, hidden rows will be skipped during parsing. */
     skipHiddenRows?: boolean;
+    /** BCP 47 locale for number separators, month/day names and short dates
+     * (formats 14 and 22). Defaults to the runtime locale, like Excel. */
+    locale?: string;
 }
 
 export interface XlsxParseProgress {

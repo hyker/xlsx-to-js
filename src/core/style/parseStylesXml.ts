@@ -22,6 +22,11 @@ export const parseStylesXml = (str: string, themes: Theme[], limits: XlsxLimits 
     const cellStylesElement = getElementByName(styleSheetElement, 'cellStyles');
     const cellStyleXfsElement = getElementByName(styleSheetElement, 'cellStyleXfs');
     const cellXfsElement = getElementByName(styleSheetElement, 'cellXfs');
+    styleSheet.numFmts = new Map();
+    for (const numFmt of getElementsByName(getElementByName(styleSheetElement, 'numFmts'), 'numFmt')) {
+        const id = boundedNumber(numFmt.getAttribute('numFmtId'), 'numFmtId', 65535, 0, true);
+        styleSheet.numFmts.set(id, numFmt.getAttribute('formatCode') ?? '');
+    }
     const fontsArray = getElementsByName(fontsElement, 'font');
     const fillsArray = getElementsByName(fillsElement, 'fill');
     const bordersArray = getElementsByName(bordersElement, 'border');

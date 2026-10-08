@@ -1,7 +1,8 @@
 {
-  "name": "xlsx-to-js",
-  "version": "1.0.6",
-  "description": "A TypeScript-based library for parsing Excel (XLSX) with browser support",
+  "name": "@hyker/xlsx-to-js",
+  "private": true,
+  "version": "2.0.0",
+  "description": "HYKER's hardened fork of xlsx-to-js: bounded, cancellable XLSX parsing and HTML previews for untrusted workbooks",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -17,7 +18,10 @@
         "default": "./dist/index.cjs"
       }
     },
-    "./worker": "./dist/worker.js"
+    "./worker": {
+      "import": "./dist/worker.js",
+      "require": "./dist/worker.cjs"
+    }
   },
   "files": [
     "dist"
@@ -29,11 +33,12 @@
     "test": "npm run typecheck && npm run build && node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "test:browser": "npm run build && playwright test",
-    "test:xml-worker": "npm run build && XLSX_XML_PARSER=xmldom node --test tests/*.test.mjs"
+    "test:xml-worker": "npm run build && XLSX_XML_PARSER=xmldom node --test tests/*.test.mjs",
+    "pack:vendor": "npm pack --pack-destination vendor"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/javier-mora/xlsx-to-js.git"
+    "url": "git+https://github.com/hyker/xlsx-to-js.git"
   },
   "keywords": [
     "excel",
@@ -42,12 +47,14 @@
     "xlsx-parser"
   ],
   "author": "Javier Mora",
+  "contributors": [
+    "HYKER (https://github.com/hyker)"
+  ],
   "license": "MIT",
-  "funding": "https://github.com/sponsors/javier-mora",
   "bugs": {
-    "url": "https://github.com/javier-mora/xlsx-to-js/issues"
+    "url": "https://github.com/hyker/xlsx-to-js/issues"
   },
-  "homepage": "https://github.com/javier-mora/xlsx-to-js#readme",
+  "homepage": "https://github.com/hyker/xlsx-to-js#readme",
   "devDependencies": {
     "@playwright/test": "^1.63.0",
     "esbuild": "^0.28.2",

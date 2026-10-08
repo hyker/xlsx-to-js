@@ -2,7 +2,7 @@ import { Workbook } from './workbook/types';
 import { WorkSheet } from './worksheet/types';
 import { Drawing } from './drawing/types';
 import { XlsxLimits, XlsxRenderOptions, XlsxPageOptions, XlsxSheetPage } from '../types';
-import { boundedNumber, enumValue, escapeHtml, fontFamily, parseRange, resolveLimits, safeColor } from './security';
+import { boundedNumber, enumValue, escapeHtml, fontFamily, limitError, parseRange, resolveLimits, safeColor } from './security';
 import { chargeImagePixels, inspectBase64Image, ImageInfo } from './image';
 
 const CSS = `<style>
@@ -21,14 +21,15 @@ class Html {
     private styleObjects = new WeakMap<object, string>();
     private rules = new Map<string, string>();
     private images = new Map<string, ImageInfo>();
-    constructor(private max: number) {}
+    private max: number;
+    constructor(private limits: XlsxLimits) { this.max = limits.maxHtmlLength; }
     add(value: string): void {
-        if ((this.length += value.length) > this.max) throw new Error('HTML exceeds output budget');
+        if ((this.length += value.length) > this.max) throw limitError(this.limits, 'maxHtmlLength', 'HTML exceeds output budget');
         this.chunks.push(value);
     }
     text(value: unknown): string {
         const str = String(value);
-        if (str.length > this.max) throw new Error('Text exceeds output budget');
+        if (str.length > this.max) throw limitError(this.limits, 'maxHtmlLength', 'Text exceeds output budget');
         return escapeHtml(str);
     }
     cellClass(style: WorkSheet['data'][number][number]['style']): string {
@@ -114,9 +115,9 @@ interface Budget { cells: number; merges: number; drawings: number; imagePixels:
 
 export function renderSheetPage(workbook: Workbook, index: number, options: XlsxPageOptions = {}): XlsxSheetPage {
     const limits = resolveLimits(options.limits);
-    if (workbook.workSheets.length > limits.maxSheets) throw new Error('Sheet count exceeds resource limits');
+    if (workbook.workSheets.length > limits.maxSheets) throw limitError(limits, 'maxSheets', 'Sheet count exceeds resource limits');
     if (!Number.isInteger(index) || index < 0 || index >= workbook.workSheets.length) throw new RangeError('Invalid sheet index');
-    const html = new Html(limits.maxHtmlLength);
+    const html = new Html(limits);
     html.add(`<div class="xlwb">${CSS}`);
     const sheet = workbook.workSheets[index];
     const page = validatePage(options, limits);
@@ -140,8 +141,8 @@ function validatePage(options: XlsxPageOptions, limits: XlsxLimits) {
 
 export function renderWorkbook(workbook: Workbook, index: number | undefined, options: XlsxRenderOptions): string {
     const limits = resolveLimits(options.limits);
-    if (workbook.workSheets.length > limits.maxSheets) throw new Error('Sheet count exceeds resource limits');
-    const html = new Html(limits.maxHtmlLength);
+    if (workbook.workSheets.length > limits.maxSheets) throw limitError(limits, 'maxSheets', 'Sheet count exceeds resource limits');
+    const html = new Html(limits);
     const budget: Budget = { cells: 0, merges: 0, drawings: 0, imagePixels: 0 };
     html.add(`<div class="xlwb">${CSS}`);
     const sheets = index === undefined ? workbook.workSheets : [workbook.workSheets[index]];
@@ -157,17 +158,18 @@ function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: B
     const range = sheet.dimention ? parseRange(sheet.dimention, limits) : undefined;
     let rows = range?.end.row ?? 0, cols = range?.end.col ?? 0;
     const drawings = sheet.drawings.filter(d => ['image', 'shape', 'textbox'].includes(d.type));
-    if ((budget.drawings += sheet.drawings.length) > limits.maxDrawings) throw new Error('Drawing count exceeds resource limits');
+    if ((budget.drawings += sheet.drawings.length) > limits.maxDrawings) throw limitError(limits, 'maxDrawings', 'Drawing count exceeds resource limits');
     for (const drawing of drawings) {
         validateDrawing(drawing, limits);
         if (drawing.type === 'image') budget.imagePixels = chargeImagePixels(html.image(drawing.base64, limits).pixels, budget.imagePixels, limits);
         rows = Math.max(rows, drawing.position.from.row + 1, drawing.position.to.row + 1);
         cols = Math.max(cols, drawing.position.from.col + 1, drawing.position.to.col + 1);
     }
-    if (rows * cols + budget.cells > limits.maxCells) throw new Error('Rendered grid exceeds cell budget');
+    if (rows * cols + budget.cells > limits.maxCells) throw limitError(limits, 'maxCells', 'Rendered grid exceeds cell budget');
     html.add(`<div class="xl-sheet"><div class="xl-name">${html.text(sheet.name)}</div>`);
     if (!rows || !cols) { html.add('<div>(empty sheet)</div></div>'); return; }
-    if (sheet.rowStyles.length > limits.maxRows || sheet.columnStyles.length > limits.maxColumns) throw new Error('Layout styles exceed resource limits');
+    if (sheet.rowStyles.length > limits.maxRows) throw limitError(limits, 'maxRows', 'Layout styles exceed resource limits');
+    if (sheet.columnStyles.length > limits.maxColumns) throw limitError(limits, 'maxColumns', 'Layout styles exceed resource limits');
     const rowStyles = new Map(sheet.rowStyles.map(style => [boundedNumber(style.r, 'row index', limits.maxRows, 1, true), style]));
     let mdw = 7;
     if (typeof document !== 'undefined') {
@@ -222,11 +224,13 @@ function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: B
         const box = rect(d);
         const right = box.left - 36 + box.width, bottom = box.top - 28 + box.height;
         while (x[cols] < right) {
-            if (cols >= limits.maxColumns || (cols + 1) * rows + budget.cells > limits.maxCells) throw new Error('Drawing expansion exceeds grid budget');
+            if (cols >= limits.maxColumns) throw limitError(limits, 'maxColumns', 'Drawing expansion exceeds grid budget');
+            if ((cols + 1) * rows + budget.cells > limits.maxCells) throw limitError(limits, 'maxCells', 'Drawing expansion exceeds grid budget');
             cols++; addColumn();
         }
         while (y[rows] < bottom) {
-            if (rows >= limits.maxRows || (rows + 1) * cols + budget.cells > limits.maxCells) throw new Error('Drawing expansion exceeds grid budget');
+            if (rows >= limits.maxRows) throw limitError(limits, 'maxRows', 'Drawing expansion exceeds grid budget');
+            if ((rows + 1) * cols + budget.cells > limits.maxCells) throw limitError(limits, 'maxCells', 'Drawing expansion exceeds grid budget');
             rows++; addRow();
         }
     }
@@ -247,7 +251,7 @@ function renderSheet(sheet: WorkSheet, html: Html, limits: XlsxLimits, budget: B
     const anchors = new Map<number, { rows: number; cols: number; sourceRow: number; sourceCol: number }>(), covered = new Set<number>();
     for (const ref of sheet.mergeCells) {
         const merge = parseRange(ref, limits);
-        if ((budget.merges += merge.area) > limits.maxMergedCells) throw new Error('Merged cells exceed resource limits');
+        if ((budget.merges += merge.area) > limits.maxMergedCells) throw limitError(limits, 'maxMergedCells', 'Merged cells exceed resource limits');
         if (merge.end.row > rows || merge.end.col > cols) throw new Error('Merge outside rendered dimension');
         const mergeRows = selectedRows.slice(lowerBound(selectedRows, merge.start.row), lowerBound(selectedRows, merge.end.row + 1));
         const mergeCols = selectedCols.slice(lowerBound(selectedCols, merge.start.col), lowerBound(selectedCols, merge.end.col + 1));
