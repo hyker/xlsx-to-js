@@ -134,6 +134,8 @@ function tokenize(section: string): Section | undefined {
 
 /** Rounds in decimal, so 1.005 at two places gives 1.01 like Excel, not 1.00. */
 function fixed(value: number, places: number): string | undefined {
+    // toFixed throws above 100 places; Excel itself allows at most 30.
+    if (places > 100) return undefined;
     const scaled = Number((value * 10 ** places).toPrecision(15));
     if (!Number.isFinite(scaled) || Math.abs(scaled) >= 1e21) return undefined;
     return (Math.round(scaled) / 10 ** places).toFixed(places);

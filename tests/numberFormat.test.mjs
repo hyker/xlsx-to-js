@@ -82,3 +82,9 @@ test('formatted text is charged against the workbook text budget while parsing',
     await assert.rejects(parser.readFile(file, { limits: { maxWorkbookTextLength: 5000 } }),
         e => e.name === 'XlsxLimitError' && e.limit === 'maxWorkbookTextLength');
 });
+
+test('formats with more decimals than toFixed supports fall back to the stored value', async () => {
+    const code = `0.${'0'.repeat(101)}`;
+    for (const value of [0, 1e-300]) assert.equal((await cell(value, { code })).value, String(value));
+    assert.equal((await cell(0, { code: `0.${'0'.repeat(30)}` })).value, `0.${'0'.repeat(30)}`);
+});

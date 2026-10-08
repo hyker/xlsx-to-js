@@ -116,7 +116,7 @@ export class Archive {
                 if (size > entry.size) { fail(new Error('Decompressed data exceeds declared ZIP size')); return; }
                 if (size > this.limits.maxEntryBytes) { fail(limitError(this.limits, 'maxEntryBytes', 'Decompressed data exceeds resource limits')); return; }
                 if (this.consumed > this.limits.maxTotalBytes) { fail(limitError(this.limits, 'maxTotalBytes', 'Decompressed data exceeds resource limits')); return; }
-                for (const byte of chunk) crc = crcTable[(crc ^ byte) & 255] ^ (crc >>> 8);
+                for (let i = 0; i < chunk.length; i++) crc = crcTable[(crc ^ chunk[i]) & 255] ^ (crc >>> 8);
                 chunks.push(chunk);
             }).on('error', fail).on('end', () => {
                 if (settled) return;

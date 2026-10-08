@@ -11,7 +11,7 @@ const CSS = `<style>
 .xl th,.xl td{border:1px solid #d0d7de;padding:0;white-space:pre;box-sizing:border-box}
 .xl th{text-align:center;font-weight:600;font-size:12px;color:#57606a;background:#f6f8fa}
 .xl td{background:#fff;font-size:13px;overflow:visible}.xl thead th{position:sticky;top:0;z-index:1}
-.xl th.xl-row{position:sticky;left:0;z-index:1}.xl-wrap{position:relative;display:inline-block}
+.xl th.xl-row{position:sticky;left:0;z-index:1}.xl-wrap{position:relative;display:inline-block;overflow:hidden;overflow:clip}
 .xl-abs{position:absolute;left:0;top:0;z-index:2;pointer-events:none}.xl-abs img{position:absolute;object-fit:contain}
 </style>`;
 
